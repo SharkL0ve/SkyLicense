@@ -1,0 +1,264 @@
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+# SkyLicense
+
+A license server, management console and Java SDK for delivering protected Java applications over TLS 1.3.
+
+## Getting started: the working Basic edition
+
+Basic implements the complete online verification path without DLLs: license checks, encrypted class delivery,
+entry-point execution, loading acknowledgement, signed heartbeats and online revocation.
+Native anti-debugging, anti-dump and memory protection are deferred. The installation ID is not a hardware fingerprint.
+
+### 1. Build the runnable package
+
+Install a full **JDK 17 or 21** and clone this repository:
+
+```sh
+git clone https://github.com/SharkL0ve/SkyLicense.git
+cd SkyLicense
+```
+
+Windows PowerShell:
+
+```powershell
+.\gradlew.bat test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
+```
+
+Linux:
+
+```sh
+./gradlew test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
+```
+
+Extract `build/distributions/SkyLicense-Basic-1.0.0.zip` to a separate writable run directory.
+Do not store a live database under `build/`. The package contains the server, embedded console, Java SDK,
+protected example JAR and setup/run scripts. No runtime configuration or credentials are checked into Git.
+
+### 2. Initialize and start the server
+
+From the extracted `SkyLicense-Basic` directory:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\SetupLocal.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\StartServer.ps1
+```
+
+Enter and confirm the initial administrator password: 12–128 characters, including at least three of uppercase letters,
+lowercase letters, digits and symbols. Setup creates private `runtime/` and `customer/` directories, independent random keys,
+a localhost TLS certificate and the Basic SDK allowlist. **Run setup once**; existing directories are never overwritten.
+
+Keep the server terminal open and visit **https://localhost:18443/**. Client authentication uses **localhost:13331**.
+The generated self-signed certificate covers only localhost/127.0.0.1 and expires in 30 days.
+For this local test, use your browser's certificate exception or trust this specific certificate in your personal store.
+The Java launcher explicitly trusts this certificate and still verifies the hostname.
+
+### 3. Initialize the administrator
+
+1. Log in as `admin` using the password entered during setup.
+2. Open the bottom-left account menu, change the password, and log in again.
+3. Open Account Security (`账户安全`), enter the current password, scan the authenticator QR code and submit its six-digit code.
+4. Save the recovery codes shown once, then log in again using TOTP or an unused recovery code.
+5. After the administrator exists, delete `runtime/secrets/bootstrap-admin.txt`. Subsequent starts do not map this one-time credential.
+
+Administrators must enroll MFA before business APIs are available. HTTP 403 for an enrollment-only administrator is expected.
+Create and verify a second MFA-enabled administrator for account recovery. The console currently uses Chinese labels;
+the relevant labels are included in this guide.
+
+### 4. Publish the example and issue a license
+
+1. Under Content Management → Programs (`内容管理 → 程序管理`), create **DemoApp**.
+2. Open the program, upload the included **DemoApp-1.0.0.jar**, and enter version **1.0.0**.
+3. Create a license. For the first test, choose one IP, one installation ID and no daily limit.
+4. In another terminal in the extracted directory, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\MakeLicense.ps1
+```
+
+Enter the issued license at the prompt. The tool writes `customer/license.dat` in authenticated `SKYLIC03` format;
+the code is not a command-line argument. Use an interactive terminal for hidden input; redirected or IDE input may not hide echo.
+
+### 5. Start the client and test revocation
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\StartClient.ps1
+```
+
+Expected output:
+
+```text
+Protected DemoApp started successfully.
+License accepted; protected entry completed; heartbeat active.
+```
+
+The console authentication log must end in **OK**. The client stays alive and sends a heartbeat approximately every 20 seconds.
+Ban its license in the console: a subsequent signed heartbeat revokes the session and stops the standalone client.
+Type `stop` in the server terminal for graceful shutdown. On later runs, use StartServer/StartClient directly; do not initialize again.
+
+### Linux commands
+
+In the extracted package:
+
+```sh
+sh run.sh setup
+sh run.sh server
+# Complete the console steps, then use another terminal:
+sh run.sh license
+sh run.sh client
+```
+
+Basic has no native platform dependency. Complete local runtime tests were performed on Windows; Linux shell syntax was checked,
+but execution still needs validation on the target Linux host.
+
+## Integrate your own application
+
+Put `settings.yml` at the protected JAR root:
+
+```yaml
+Name: MyApp
+Version: 1.0.0
+EntryClass: example.Entry
+EntryPoint: start
+InfPort: false
+KeepClasses: []
+```
+
+The entry must be a public static no-argument method, such as `public static void start()`.
+Initialize the application and return promptly so the loading ACK can complete. Program name, upload version and client arguments
+must match `Name`/`Version` exactly, including case. Names/versions are 1–64 safe ASCII characters: a letter/digit first,
+then letters, digits, `.`, `_`, `+` or `-`. The JAR limit is 64 MiB. A program cannot be renamed after its first version is uploaded.
+
+Publish through the console: copying a file into `resources/` does not create a version catalog entry. Uncataloged files are quarantined.
+Ordinary non-class resources and dependency JARs belong in the customer's host classpath/data directory.
+`KeepClasses` accepts RE2/J patterns over slash-separated JVM names; matching classes stay encrypted in transit but skip method rewriting.
+
+Run a different program with the packaged host:
+
+```powershell
+.\StartClient.ps1 -Program MyApp -Version 1.0.0
+```
+
+For an existing Java host, implement all six methods of `cn.sky.license.PluginProxy`, then call:
+
+```java
+BasicLicenseClient client = new BasicLicenseClient(proxy);
+Response result = client.authenticate("license.example.com:13331", "MyApp", "1.0.0");
+if (result != Response.ACCEPT) {
+    throw new IllegalStateException("Authentication failed: " + client.getLastError());
+}
+// The SDK already invoked the entry. Retain client, keep the host alive,
+// and call client.close() when the host shuts down.
+```
+
+`disablePlugin()` must actually stop protected business operations. `BasicLauncher` exits its process for this purpose.
+Only one Basic session can be active in a JVM. Fix delivery/rejection errors before restarting the host; do not invoke the entry twice.
+
+## Policy and customer credentials
+
+| Setting | Meaning |
+| --- | --- |
+| IP / installation limit | `0` is unlimited; positive values limit distinct bindings, not concurrent sessions |
+| Expiration | Blank is permanent; API format is `yyyy-MM-dd-HH:mm` |
+| Daily limit | `0` is unlimited; counts resource releases per server-local day, not heartbeats |
+| `license.dat` | Must be at the host classpath root |
+| `SKYLICENSE_LICENSE_FILE_SECRET_FILE` | Customer-specific key; use the same value to generate and read `license.dat` |
+| `basic-installation.id` | Persistent random identity in the client data directory; retain it to retain the binding |
+
+Every customer needs an independent license-file secret. Copying an installation directory can copy its identity.
+Basic does not provide hardware anti-cloning, native signature attestation or anti-debugging. Its software-version Build ID is
+`7f10d350d700568181fc244d4f3b779c75ab57316ae8e0e573a1802b815c33f0`, security epoch `1`.
+
+Bindings and quota are committed when resources are released. Entry/ACK failure can consume quota;
+`DELIVERY_UNCONFIRMED` and unbinding do not refund delivered resources. Disabling a user/program or banning a license revokes online leases.
+
+## Remote deployment and runtime configuration
+
+Setup generates runtime files; the repository contains no real configuration, database, license, certificate or private key.
+For manual deployment, start with [`deployment/config.example.json`](deployment/config.example.json) and [DEPLOYMENT.md](DEPLOYMENT.md).
+
+Replace localhost TLS files with a certificate/key for the actual server domain, update `authTlsServerName`, and connect clients using that domain.
+Keep the deployment directory, resources, database, private key and credential files owner-only.
+Leave `allowedWebOrigins` empty for the embedded same-origin console.
+
+The server requires independent, fixed audit/MFA keys through `SKYLICENSE_OPERATION_LOG_HMAC_KEY_FILE` and
+`SKYLICENSE_MFA_ENCRYPTION_KEY_FILE`; each contains a nonzero 32-byte hexadecimal key. Bootstrap is first-start only.
+Save the original audit/MFA keys separately for disaster recovery; do not regenerate them at every restart.
+
+Basic uses the JVM CA store by default. For a private CA, set `SKYLICENSE_BASIC_CA_CERT_FILE` to its PEM file.
+Optionally set `SKYLICENSE_BASIC_CERT_SHA256` to the SHA-256 of the TLS leaf certificate's DER encoding.
+The packaged script selects the local test certificate; adjust it or launch directly for a public-CA server:
+
+```powershell
+$env:SKYLICENSE_LICENSE_FILE_SECRET_FILE = 'C:\MyCustomer\secrets\license-file-secret.txt'
+Remove-Item Env:\SKYLICENSE_BASIC_CA_CERT_FILE -ErrorAction SilentlyContinue
+java -cp '.;SkyLicense-basic.jar' cn.sky.license.BasicLauncher license.example.com:13331 MyApp 1.0.0
+```
+
+Run `java -jar SkyLicense-Server.jar --validate-config` from the deployment directory using the service account/environment before starting.
+Missing/invalid config, unsafe permissions or invalid TLS fail closed. `web_magiclicense.db` is intentionally retained as a compatible database filename.
+
+## Operations and backups
+
+- `/health/live` and `/health/ready` return minimal `UP`/`DOWN` JSON; readiness failures return 503. Keep certificate/hostname verification enabled.
+- Use authentication logs for rejection reasons and the operations page for audit-chain verification. Application logs use UTC under `runtime/logs/`.
+- HTTP 401 means log in again. For 403, check MFA, role, Origin and CSRF. For program mismatch, check name/version/ownership;
+  for `NOT_ADDRESS`, check bindings; for connection failures, check CA, hostname, Pin, ports, firewall and clocks.
+- Stop the service before an offline backup. Supply the original audit/MFA keys and the independent `SKYLICENSE_BACKUP_HMAC_KEY_FILE`, then run:
+
+```text
+java -jar ../SkyLicense-Server.jar --create-backup <private-backup-directory>/backup.skybackup
+java -jar ../SkyLicense-Server.jar --verify-backup <backup-path>/backup.skybackup
+java -jar ../SkyLicense-Server.jar --extract-backup <backup-path>/backup.skybackup <new-restore-directory>
+```
+
+Replace angle-bracket paths. Keep backups outside the deployment and extract into a new destination.
+Archives exclude TLS private keys and environment secrets: restore those separately, repair permissions and pass preflight before starting.
+Preserve existing `runtime/`/`customer/` directories, databases and keys during upgrades; update only application files/scripts.
+
+## Source layout and console development
+
+```text
+src/main/java/       Server, TLS/v4, license policy, audit and Web API
+src/main/resources/  Application resources and bundled console assets
+Client-Side/        Basic SDK, optional native bridge and release verifiers
+web/                Vue source and npm lockfile
+examples/basic-app/ Protected example source and settings.yml
+deployment/         Setup tools, service templates and non-secret config example
+tools/              Isolated integration tests
+```
+
+Bundled console assets make normal server builds usable without Node.js. To modify the UI, use
+Node.js `^20.19.0 || >=22.12.0` and npm 10+:
+
+```sh
+cd web
+npm ci --ignore-scripts
+npm run build
+```
+
+Mirror `web/dist/` exactly into `src/main/resources/static/`, removing obsolete hashed assets, and rebuild the server.
+Do not publish `node_modules/` or runtime environment files. The API defaults to same-origin `/api`.
+
+The current frontend dependency audit reports known advisories. Review `npm audit` and plan compatible dependency upgrades
+before public deployment; passing functional tests is not a full security certification.
+
+## Tests and optional native SDK
+
+The baseline passed **252 server tests and 25 SDK tests**, plus packaged-JAR authentication, entry/ACK, heartbeats,
+rejection cases, online revocation, backup extraction and restart. Isolated tests need Python 3.10+ and `cryptography`:
+
+```sh
+python -m pip install cryptography
+python tools/local-smoke-test.py --basic
+python tools/test-basic-package.py
+```
+
+The package test exercises Windows PowerShell scripts. Tests create temporary directories and random credentials outside the checkout.
+Builds and unit tests do not need runtime configuration.
+
+The native-enhanced SDK is optional and separate from Basic. `:Client-Side:jar` deliberately rejects missing, unsigned or non-hardened native assets.
+Production native packaging needs matching v4 source, release identity, Windows signing and Linux hardening. CI DLL/SO files are not distributed here.
+See [DEPLOYMENT.md](DEPLOYMENT.md), [API-DOC.md](API-DOC.md), and the [Linux](deployment/linux/README.md)/[Windows](deployment/windows/README.md) service guides.
+
+License: see [LICENSE](LICENSE).

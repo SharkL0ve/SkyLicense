@@ -1,0 +1,1 @@
+async function e(e,t=200){let n=[],r=1;for(;;){let i=await e({page:r,pageSize:t});if(n.push(...i.records),r>=i.totalPages||n.length>=i.total||i.records.length===0)return n;r+=1}}export{e as t};

@@ -1,0 +1,100 @@
+name: security-ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  server-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Verify Gradle wrapper
+        uses: gradle/actions/wrapper-validation@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - name: Protocol and server tests
+        run: ./gradlew clean test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
+      - name: Read-only deployment preflight smoke test
+        run: |
+          export SKYLICENSE_OPERATION_LOG_HMAC_KEY=$(openssl rand -hex 32)
+          export SKYLICENSE_MFA_ENCRYPTION_KEY=$(openssl rand -hex 32)
+          export SKYLICENSE_BOOTSTRAP_ADMIN_PASSWORD="CI-Preflight#$(openssl rand -hex 24)"
+          install -d -m 700 "$RUNNER_TEMP/skylicense-preflight/certs"
+          install -d -m 700 "$RUNNER_TEMP/skylicense-preflight/resources"
+          openssl req -new -newkey rsa:2048 -sha256 -nodes \
+            -subj '/CN=localhost' \
+            -keyout "$RUNNER_TEMP/skylicense-preflight/certs/auth-key.pem" \
+            -out "$RUNNER_TEMP/skylicense-preflight/certs/auth.csr" \
+            >/dev/null 2>&1
+          cat > "$RUNNER_TEMP/skylicense-preflight/certs/auth-ext.cnf" <<'EOF'
+          basicConstraints=critical,CA:FALSE
+          subjectAltName=DNS:localhost,IP:127.0.0.1
+          keyUsage=digitalSignature,keyEncipherment
+          extendedKeyUsage=serverAuth
+          EOF
+          openssl x509 -req -sha256 -days 2 \
+            -in "$RUNNER_TEMP/skylicense-preflight/certs/auth.csr" \
+            -signkey "$RUNNER_TEMP/skylicense-preflight/certs/auth-key.pem" \
+            -extfile "$RUNNER_TEMP/skylicense-preflight/certs/auth-ext.cnf" \
+            -out "$RUNNER_TEMP/skylicense-preflight/certs/auth-chain.pem" \
+            >/dev/null 2>&1
+          chmod 600 "$RUNNER_TEMP/skylicense-preflight/certs/auth-key.pem"
+          chmod 644 "$RUNNER_TEMP/skylicense-preflight/certs/auth-chain.pem"
+          cat > "$RUNNER_TEMP/skylicense-preflight/config.json" <<'JSON'
+          {
+            "debug": false,
+            "authPort": 13331,
+            "authTlsCertificateChain": "certs/auth-chain.pem",
+            "authTlsPrivateKey": "certs/auth-key.pem",
+            "authTlsServerName": "localhost",
+            "minimumClientSecurityEpoch": 1,
+            "allowedClientBuildIds": [
+              "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+            ],
+            "webPort": 8080,
+            "allowedWebOrigins": []
+          }
+          JSON
+          cd "$RUNNER_TEMP/skylicense-preflight"
+          output=$(java -jar "$GITHUB_WORKSPACE/build/libs/SkyLicense-Server.jar" \
+            --validate-config)
+          printf '%s\n' "$output"
+          grep -Fx 'deployment_validation=ok' <<<"$output"
+          grep -Fx 'database_created=false' <<<"database_created=$(test ! -e web_magiclicense.db && echo false || echo true)"
+      - name: SDK packaging fails closed without released native artifacts
+        env:
+          SKYLICENSE_MANIFEST_PUBLIC_KEY: ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
+          SKYLICENSE_MIN_SECURITY_EPOCH: "1"
+          SKYLICENSE_SECURITY_EPOCH: "1"
+          SKYLICENSE_BUILD_ID: 0909090909090909090909090909090909090909090909090909090909090909
+          SKYLICENSE_ARTIFACT_CHANNEL: ci-test
+        run: |
+          set +e
+          output=$(./gradlew :Client-Side:verifyNativeReleaseArtifacts --no-daemon --warning-mode all 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -F 'Native artifact must be a regular file' <<<"$output"
+      - name: Generate CycloneDX SBOM
+        run: ./gradlew cyclonedxBom --no-daemon
+      - name: Upload server SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-cyclonedx-sbom
+          path: build/reports/cyclonedx/bom.*
+          if-no-files-found: error
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0

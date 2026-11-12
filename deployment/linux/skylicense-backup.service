@@ -1,0 +1,50 @@
+[Unit]
+Description=Offline authenticated SkyLicense backup
+After=network-online.target
+ConditionPathIsExecutable=/usr/local/libexec/skylicense-backup
+
+[Service]
+Type=oneshot
+User=skylicense
+Group=skylicense
+UMask=0077
+WorkingDirectory=/opt/skylicense
+LoadCredential=operation-log-hmac:/etc/skylicense/credentials/operation-log-hmac
+LoadCredential=backup-hmac:/etc/skylicense/credentials/backup-hmac
+LoadCredential=mfa-encryption-key:/etc/skylicense/credentials/mfa-encryption-key
+Environment=SKYLICENSE_OPERATION_LOG_HMAC_KEY_FILE=%d/operation-log-hmac
+Environment=SKYLICENSE_BACKUP_HMAC_KEY_FILE=%d/backup-hmac
+Environment=SKYLICENSE_MFA_ENCRYPTION_KEY_FILE=%d/mfa-encryption-key
+
+# Add these lines only when the TLS private key is encrypted.
+#LoadCredential=tls-key-password:/etc/skylicense/credentials/tls-key-password
+#Environment=SKYLICENSE_TLS_KEY_PASSWORD_FILE=%d/tls-key-password
+
+# The backup itself runs under skylicense. Only service coordination receives
+# the manager's privileges through systemd's + command prefix.
+ExecStartPre=+/bin/sh -c 'rm -f /run/skylicense-backup-was-active; if /usr/bin/systemctl is-active --quiet skylicense.service; then : > /run/skylicense-backup-was-active; /usr/bin/systemctl stop skylicense.service; fi'
+ExecStart=/usr/local/libexec/skylicense-backup
+ExecStopPost=+/bin/sh -c 'if [ -f /run/skylicense-backup-was-active ]; then rm -f /run/skylicense-backup-was-active; /usr/bin/systemctl start skylicense.service; fi'
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ProtectProc=invisible
+ProcSubset=pid
+ReadWritePaths=/opt/skylicense /var/backups/skylicense

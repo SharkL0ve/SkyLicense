@@ -1,0 +1,49 @@
+[Unit]
+Description=SkyLicense license and administration server
+Wants=network-online.target
+After=network-online.target
+ConditionPathIsRegular=/opt/skylicense/SkyLicense-Server.jar
+
+[Service]
+Type=simple
+User=skylicense
+Group=skylicense
+UMask=0077
+WorkingDirectory=/opt/skylicense
+LoadCredential=operation-log-hmac:/etc/skylicense/credentials/operation-log-hmac
+LoadCredential=mfa-encryption-key:/etc/skylicense/credentials/mfa-encryption-key
+Environment=SKYLICENSE_OPERATION_LOG_HMAC_KEY_FILE=%d/operation-log-hmac
+Environment=SKYLICENSE_MFA_ENCRYPTION_KEY_FILE=%d/mfa-encryption-key
+ExecStartPre=/usr/bin/java -jar /opt/skylicense/SkyLicense-Server.jar --validate-config
+ExecStart=/usr/bin/java -XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading -jar /opt/skylicense/SkyLicense-Server.jar
+KillSignal=SIGTERM
+TimeoutStartSec=90
+TimeoutStopSec=45
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ProtectProc=invisible
+ProcSubset=pid
+ReadWritePaths=/opt/skylicense
+
+[Install]
+WantedBy=multi-user.target

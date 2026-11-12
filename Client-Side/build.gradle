@@ -1,0 +1,277 @@
+plugins {
+    id 'java'
+}
+
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.security.KeyFactory
+import java.security.MessageDigest
+import java.security.Signature
+import java.security.spec.X509EncodedKeySpec
+import java.util.Arrays
+import java.util.Locale
+import java.util.zip.ZipFile
+
+group = 'cn.sky.license'
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:all', '-Xlint:-options', '-Xlint:-processing', '-Werror']
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.14.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.14.4'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+// Keep the binary hardening parser out of the customer SDK JAR. It is compiled
+// as a release-only verifier and is exercised by the normal Client-Side tests.
+sourceSets {
+    releaseVerifier {
+        java.srcDir 'src/releaseVerifier/java'
+    }
+}
+
+sourceSets.test.compileClasspath += sourceSets.releaseVerifier.output
+sourceSets.test.runtimeClasspath += sourceSets.releaseVerifier.output
+
+tasks.named('test') {
+    dependsOn tasks.named('releaseVerifierClasses')
+}
+
+def nativeArtifactNames = [
+        'SkyLicense_64.dll',
+        'SkyLicense_64.dll.integrity',
+        'libSkyLicense_64.so',
+        'libSkyLicense_64.so.integrity'
+]
+
+def hexEncode = { byte[] value ->
+    value.collect { String.format('%02x', it & 0xff) }.join()
+}
+
+def hexSlice = { byte[] value, int start, int end ->
+    def output = new byte[end - start]
+    System.arraycopy(value, start, output, 0, output.length)
+    hexEncode(output)
+}
+
+def hexDecode = { String value, String name ->
+    if (value == null || value.length() != 64 || !(value ==~ /(?i)[0-9a-f]{64}/)) {
+        throw new GradleException("${name} must be exactly 64 hexadecimal characters")
+    }
+    def output = new byte[32]
+    for (int index = 0; index < output.length; index++) {
+        output[index] = Integer.parseInt(value.substring(index * 2, index * 2 + 2), 16) as byte
+    }
+    output
+}
+
+def sha256File = { File artifact ->
+    MessageDigest digest = MessageDigest.getInstance('SHA-256')
+    Files.newInputStream(artifact.toPath()).withCloseable { input ->
+        byte[] buffer = new byte[64 * 1024]
+        int read
+        while ((read = input.read(buffer)) != -1) {
+            digest.update(buffer, 0, read)
+        }
+    }
+    hexEncode(digest.digest())
+}
+
+def verifyNativeHardening = tasks.register('verifyNativeHardening', JavaExec) {
+    group = 'verification'
+    description = 'Verifies PE32+/CFG and ELF64/RELRO/BIND_NOW hardening before packaging.'
+    dependsOn tasks.named('releaseVerifierClasses')
+    classpath = sourceSets.releaseVerifier.runtimeClasspath
+    mainClass = 'cn.sky.license.release.NativeArtifactHardeningVerifier'
+    args '--windows', file('src/main/resources/SkyLicense_64.dll').absolutePath,
+            '--linux', file('src/main/resources/libSkyLicense_64.so').absolutePath
+}
+
+def verifyManifestSignature = { byte[] manifest, String publicKeyHex ->
+    byte[] rawKey = hexDecode(publicKeyHex, 'SKYLICENSE_MANIFEST_PUBLIC_KEY')
+    byte[] encodedKey = new byte[12 + rawKey.length]
+    byte[] x509Prefix = [
+            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00
+    ] as byte[]
+    System.arraycopy(x509Prefix, 0, encodedKey, 0, x509Prefix.length)
+    System.arraycopy(rawKey, 0, encodedKey, x509Prefix.length, rawKey.length)
+
+    def publicKey = KeyFactory.getInstance('Ed25519')
+            .generatePublic(new X509EncodedKeySpec(encodedKey))
+    def verifier = Signature.getInstance('Ed25519')
+    verifier.initVerify(publicKey)
+    verifier.update('SkyLicense artifact v2\0'.getBytes(StandardCharsets.US_ASCII))
+    verifier.update(manifest, 0, 96)
+    if (!verifier.verify(Arrays.copyOfRange(manifest, 96, 160))) {
+        throw new GradleException('Ed25519 integrity manifest signature verification failed')
+    }
+}
+
+tasks.register('verifyNativeReleaseArtifacts') {
+    group = 'verification'
+    description = 'Verifies native artifact metadata and signed manifests before SDK packaging.'
+    dependsOn verifyNativeHardening
+    doLast {
+        def requiredFiles = nativeArtifactNames.collect { file("src/main/resources/${it}") }
+        def missing = requiredFiles.findAll { !it.isFile() }
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                    'Refusing to package unsigned/missing native artifacts: ' +
+                            missing.collect { it.name }.join(', '))
+        }
+
+        def expectedBuildId = System.getenv('SKYLICENSE_BUILD_ID')?.toLowerCase(Locale.ROOT)
+        def expectedEpochText = System.getenv('SKYLICENSE_SECURITY_EPOCH')
+        def minimumEpochText = System.getenv('SKYLICENSE_MIN_SECURITY_EPOCH')
+        def publicKey = System.getenv('SKYLICENSE_MANIFEST_PUBLIC_KEY')
+        def channel = System.getenv('SKYLICENSE_ARTIFACT_CHANNEL') ?: 'production'
+        if (!expectedBuildId || !expectedEpochText || !minimumEpochText || !publicKey) {
+            throw new GradleException(
+                    'SDK release packaging requires SKYLICENSE_MANIFEST_PUBLIC_KEY, ' +
+                            'SKYLICENSE_MIN_SECURITY_EPOCH, SKYLICENSE_SECURITY_EPOCH and SKYLICENSE_BUILD_ID')
+        }
+
+        int expectedEpoch
+        int minimumEpoch
+        try {
+            expectedEpoch = Integer.parseInt(expectedEpochText)
+            minimumEpoch = Integer.parseInt(minimumEpochText)
+        } catch (NumberFormatException error) {
+            throw new GradleException('SDK security epochs must be positive integers', error)
+        }
+        if (minimumEpoch <= 0 || expectedEpoch < minimumEpoch) {
+            throw new GradleException('SDK security epoch is below the configured minimum')
+        }
+        hexDecode(expectedBuildId, 'SKYLICENSE_BUILD_ID')
+        if (expectedBuildId ==~ /(?i)0{64}/) {
+            throw new GradleException('SKYLICENSE_BUILD_ID must not be all zero')
+        }
+
+        def knownCiBuildId = '09' * 32
+        def knownCiPublicKey = 'ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c'
+        if (channel == 'production' &&
+                (expectedBuildId == knownCiBuildId || publicKey.equalsIgnoreCase(knownCiPublicKey))) {
+            throw new GradleException(
+                    'Refusing known CI test native identity for a production SDK; use a fresh release key and Build ID')
+        }
+        if (channel == 'ci-test' &&
+                (expectedBuildId != knownCiBuildId || !publicKey.equalsIgnoreCase(knownCiPublicKey))) {
+            throw new GradleException('ci-test artifact channel does not match its pinned test identity')
+        }
+        if (!(channel in ['production', 'ci-test'])) {
+            throw new GradleException("Unsupported SKYLICENSE_ARTIFACT_CHANNEL: ${channel}")
+        }
+
+        def metadata = []
+        def productId = '536b794c6963656e7365000000000000'
+        requiredFiles.findAll { it.name.endsWith('.integrity') }.each { manifestFile ->
+            def artifactName = manifestFile.name[0..-11]
+            def artifact = file("src/main/resources/${artifactName}")
+            byte[] bytes = Files.readAllBytes(manifestFile.toPath())
+            if (bytes.length != 160) {
+                throw new GradleException("Integrity manifest must contain exactly 160 bytes: ${manifestFile.name}")
+            }
+            if (new String(bytes, 0, 8, StandardCharsets.US_ASCII) != 'SKYINT02') {
+                throw new GradleException("Integrity manifest has an invalid magic header: ${manifestFile.name}")
+            }
+            if (hexSlice(bytes, 8, 24) != productId || bytes[26] != 0 || bytes[27] != 0) {
+                throw new GradleException("Integrity manifest product/reserved fields are invalid: ${manifestFile.name}")
+            }
+            int platform = bytes[24] & 0xff
+            int architecture = bytes[25] & 0xff
+            if (artifactName.endsWith('.dll') && (platform != 1 || architecture != 1)) {
+                throw new GradleException("Windows artifact manifest target is invalid: ${manifestFile.name}")
+            }
+            if (artifactName.endsWith('.so') && (platform != 2 || architecture != 1)) {
+                throw new GradleException("Linux artifact manifest target is invalid: ${manifestFile.name}")
+            }
+            int epoch = ((bytes[28] & 0xff) << 24) | ((bytes[29] & 0xff) << 16) |
+                    ((bytes[30] & 0xff) << 8) | (bytes[31] & 0xff)
+            if (epoch <= 0 || epoch < minimumEpoch || epoch != expectedEpoch) {
+                throw new GradleException("Integrity manifest security epoch is invalid: ${manifestFile.name}")
+            }
+            def buildId = hexSlice(bytes, 32, 64)
+            if (buildId != expectedBuildId || buildId ==~ /(?i)0{64}/) {
+                throw new GradleException("Integrity manifest Build ID does not match release environment: ${manifestFile.name}")
+            }
+            def artifactHash = hexSlice(bytes, 64, 96)
+            if (artifactHash != sha256File(artifact)) {
+                throw new GradleException("Native artifact SHA-256 does not match its manifest: ${artifactName}")
+            }
+            verifyManifestSignature(bytes, publicKey)
+            metadata << [buildId: buildId, epoch: epoch]
+        }
+        if (metadata.collect { it.buildId }.unique().size() != 1 ||
+                metadata.collect { it.epoch }.unique().size() != 1) {
+            throw new GradleException('Windows and Linux native artifacts do not share one release identity')
+        }
+
+        println("native_build_id=${expectedBuildId}")
+        println("native_security_epoch=${expectedEpoch}")
+        println("allowed_client_build_ids=[\"${expectedBuildId}\"]")
+        println('native_artifacts_verified=true')
+    }
+}
+
+tasks.named('jar') {
+    dependsOn tasks.named('verifyNativeReleaseArtifacts')
+    doLast {
+        def archive = archiveFile.get().asFile
+        ZipFile zip = new ZipFile(archive)
+        try {
+            nativeArtifactNames.each { name ->
+                def entry = zip.getEntry(name)
+                if (entry == null || entry.directory || entry.size <= 0) {
+                    throw new GradleException("Packaged SDK is missing native resource: ${name}")
+                }
+            }
+            def legacy = zip.entries().findAll {
+                it.name.startsWith('old/') || it.name.startsWith('License_') || it.name.startsWith('libLicense_')
+            }
+            if (!legacy.isEmpty()) {
+                throw new GradleException("Packaged SDK contains legacy native resources: ${legacy*.name}")
+            }
+        } finally {
+            zip.close()
+        }
+        println("sdk_jar_verified=${archive}")
+    }
+}
+
+jar {
+    exclude 'old/**'
+    exclude 'License_*.dll'
+    exclude 'libLicense_*.so'
+    exclude 'libLicense_*.dylib'
+    exclude 'libLicense_arm64.dylib'
+    exclude 'RayLibrary'
+    archiveBaseName = 'SkyLicense'
+}
+
+// Portable Java 17+ baseline: native release checks remain mandatory for the native SDK.
+tasks.register('basicJar', Jar) {
+    group = 'build'
+    description = 'Builds the usable Java-only protocol-v4 SDK without native protection.'
+    dependsOn tasks.named('classes')
+    archiveFileName = 'SkyLicense-basic.jar'
+    from(sourceSets.main.output.classesDirs)
+    include 'cn/sky/license/Basic*.class'
+    include 'cn/sky/license/PluginProxy.class', 'cn/sky/license/Resource.class', 'cn/sky/license/Response.class'
+    include 'cn/sky/license/LicenseFile*.class', 'cn/sky/license/SecretSource.class'
+    manifest { attributes('Implementation-Title': 'SkyLicense Basic Java SDK', 'Implementation-Version': '1.0.0') }
+}

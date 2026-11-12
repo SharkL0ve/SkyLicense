@@ -1,0 +1,6 @@
+Name: DemoApp
+Version: 1.0.0
+EntryClass: example.Entry
+EntryPoint: start
+InfPort: false
+KeepClasses: []

@@ -1,0 +1,22 @@
+<service>
+  <id>SkyLicense</id>
+  <name>SkyLicense</name>
+  <description>SkyLicense license and administration server</description>
+  <!-- Copy a verified WinSW executable next to this file as SkyLicense.exe. -->
+  <executable>C:\Program Files\Eclipse Adoptium\jdk-17\bin\java.exe</executable>
+  <arguments>-XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading -jar "%BASE%\SkyLicense-Server.jar"</arguments>
+  <workingdirectory>%BASE%</workingdirectory>
+  <logpath>%BASE%\logs</logpath>
+  <log mode="roll-by-size-time">
+    <sizeThreshold>10485760</sizeThreshold>
+    <keepFiles>10</keepFiles>
+  </log>
+  <onfailure action="restart" delay="10 sec" />
+  <stoptimeout>30 sec</stoptimeout>
+  <env name="SKYLICENSE_OPERATION_LOG_HMAC_KEY_FILE" value="%BASE%\secrets\operation-log-hmac.txt" />
+  <env name="SKYLICENSE_MFA_ENCRYPTION_KEY_FILE" value="%BASE%\secrets\mfa-encryption-key.txt" />
+  <!-- Add only for first bootstrap, then remove it and the source file. -->
+  <!-- <env name="SKYLICENSE_BOOTSTRAP_ADMIN_PASSWORD_FILE" value="%BASE%\secrets\bootstrap-admin.txt" /> -->
+  <!-- Add only when auth-key.pem is encrypted. -->
+  <!-- <env name="SKYLICENSE_TLS_KEY_PASSWORD_FILE" value="%BASE%\secrets\tls-key-password.txt" /> -->
+</service>

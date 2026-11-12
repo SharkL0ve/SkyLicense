@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN" monitorInterval="0">
+    <Properties>
+        <Property name="log.pattern">[%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}{UTC}][%t/%level] %enc{%message}{CRLF}%notEmpty{ | %enc{%throwable}{CRLF}}%n</Property>
+        <Property name="file.filename">logs/latest.log</Property>
+        <Property name="file.pattern">logs/archive/skylicense-%d{yyyy-MM-dd}-%i.log.gz</Property>
+    </Properties>
+    <Appenders>
+        <Console name="console" target="SYSTEM_OUT">
+            <PatternLayout charset="UTF-8" pattern="${log.pattern}"/>
+        </Console>
+        <RollingFile name="file"
+                     bufferedIO="true"
+                     immediateFlush="true"
+                     fileName="${file.filename}"
+                     filePattern="${file.pattern}">
+            <PatternLayout charset="UTF-8" pattern="${log.pattern}"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="50 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="20">
+                <Delete basePath="logs/archive" maxDepth="1">
+                    <IfFileName glob="skylicense-*.log.gz"/>
+                    <IfAny>
+                        <IfLastModified age="30d"/>
+                        <IfAccumulatedFileSize exceeds="2 GB"/>
+                        <IfAccumulatedFileCount exceeds="200"/>
+                    </IfAny>
+                </Delete>
+            </DefaultRolloverStrategy>
+        </RollingFile>
+    </Appenders>
+    <Loggers>
+        <Root level="info">
+            <AppenderRef ref="console"/>
+            <AppenderRef ref="file"/>
+        </Root>
+    </Loggers>
+</Configuration>

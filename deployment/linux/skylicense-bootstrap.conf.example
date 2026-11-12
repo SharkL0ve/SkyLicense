@@ -1,0 +1,9 @@
+[Service]
+# Install this drop-in only for the first start, then remove it and the source
+# credential after the admin account has been created.
+LoadCredential=bootstrap-admin-password:/etc/skylicense/credentials/bootstrap-admin-password
+Environment=SKYLICENSE_BOOTSTRAP_ADMIN_PASSWORD_FILE=%d/bootstrap-admin-password
+
+# Uncomment only when auth-key.pem is encrypted.
+#LoadCredential=tls-key-password:/etc/skylicense/credentials/tls-key-password
+#Environment=SKYLICENSE_TLS_KEY_PASSWORD_FILE=%d/tls-key-password

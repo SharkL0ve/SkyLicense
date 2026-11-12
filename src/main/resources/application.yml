@@ -1,0 +1,12 @@
+spring:
+  main:
+    allow-bean-definition-overriding: true
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: true
+
+logging:
+  level:
+    cn.sky.skylicense.web: INFO
+    org.springframework: WARN

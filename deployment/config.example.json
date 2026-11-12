@@ -1,0 +1,11 @@
+{
+  "debug": false,
+  "authPort": 13331,
+  "authTlsCertificateChain": "certs/auth-chain.pem",
+  "authTlsPrivateKey": "certs/auth-key.pem",
+  "authTlsServerName": "license.example.com",
+  "minimumClientSecurityEpoch": 1,
+  "allowedClientBuildIds": ["7f10d350d700568181fc244d4f3b779c75ab57316ae8e0e573a1802b815c33f0"],
+  "webPort": 18443,
+  "allowedWebOrigins": []
+}

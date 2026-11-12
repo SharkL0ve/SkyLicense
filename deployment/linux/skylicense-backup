@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+umask 077
+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+destination="/var/backups/skylicense/skylicense-${timestamp}.skybackup"
+
+/usr/bin/java -XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading \
+  -jar /opt/skylicense/SkyLicense-Server.jar \
+  --create-backup "$destination"
+/usr/bin/java -XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading \
+  -jar /opt/skylicense/SkyLicense-Server.jar \
+  --verify-backup "$destination"
+
+echo "verified_backup=$destination"

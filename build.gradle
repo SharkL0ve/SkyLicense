@@ -1,0 +1,148 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.16'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'org.cyclonedx.bom' version '3.3.0'
+}
+
+group = 'cn.sky.skylicense'
+version = 'Server'
+
+ext['gson.version'] = '2.14.0'
+ext['hikaricp.version'] = '7.1.0'
+ext['jackson-bom.version'] = '2.22.1'
+ext['log4j2.version'] = '2.26.1'
+ext['netty.version'] = '4.1.136.Final'
+ext['snakeyaml.version'] = '2.6'
+ext['sqlite-jdbc.version'] = '3.53.2.0'
+ext['undertow.version'] = '2.3.26.Final'
+
+allprojects {
+    dependencyLocking {
+        lockAllConfigurations()
+    }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:all', '-Xlint:-processing', '-Werror']
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations.all {
+    exclude group: 'org.springframework.boot', module: 'spring-boot-starter-logging'
+    exclude group: 'org.apache.tomcat.embed'
+    exclude group: 'org.apache.logging.log4j', module: 'log4j-to-slf4j'
+    exclude group: 'ch.qos.logback', module: 'logback-classic'
+    exclude group: 'ch.qos.logback', module: 'logback-core'
+    exclude group: 'org.slf4j', module: 'slf4j-simple'
+    exclude group: 'org.slf4j', module: 'slf4j-nop'
+}
+
+dependencies {
+    // Spring Boot
+    implementation('org.springframework.boot:spring-boot-starter-web') {
+        exclude group: 'org.springframework.boot', module: 'spring-boot-starter-tomcat'
+    }
+    implementation 'org.springframework.boot:spring-boot-starter-undertow'
+    implementation 'org.springframework.boot:spring-boot-starter-log4j2'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
+    runtimeOnly 'org.glassfish.expressly:expressly:5.0.0'
+    // Database
+    implementation 'com.zaxxer:HikariCP'
+    implementation 'com.j256.ormlite:ormlite-jdbc:6.1'
+    implementation 'org.xerial:sqlite-jdbc'
+
+    // ASM
+    implementation 'org.ow2.asm:asm:9.10.1'
+    implementation 'org.ow2.asm:asm-analysis:9.10.1'
+    implementation 'org.ow2.asm:asm-tree:9.10.1'
+    implementation 'org.ow2.asm:asm-util:9.10.1'
+
+    // Networking
+    implementation 'io.netty:netty-codec'
+    implementation 'io.netty:netty-handler'
+    implementation 'io.netty:netty-transport'
+
+    // Utilities
+    implementation 'com.google.code.gson:gson'
+    implementation 'com.google.guava:guava:33.6.0-jre'
+    implementation 'com.google.re2j:re2j:1.8'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok:1.18.46'
+    annotationProcessor 'org.projectlombok:lombok:1.18.46'
+    testCompileOnly 'org.projectlombok:lombok:1.18.46'
+    testAnnotationProcessor 'org.projectlombok:lombok:1.18.46'
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.springframework:spring-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// 使用 Spring Boot bootJar 打包
+bootJar {
+    archiveFileName.set('SkyLicense-Server.jar')
+    mainClass.set('cn.sky.skylicense.Server')
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// 禁用普通 jar
+jar {
+    enabled = false
+}
+
+def compileBasicExample = tasks.register('compileBasicExample', JavaCompile) {
+    source = fileTree('examples/basic-app/src') { include '**/*.java' }
+    classpath = files()
+    destinationDirectory = layout.buildDirectory.dir('basic-example/classes')
+    options.release = 17
+}
+def basicExampleJar = tasks.register('basicExampleJar', Jar) {
+    dependsOn compileBasicExample
+    archiveFileName = 'DemoApp-1.0.0.jar'
+    destinationDirectory = layout.buildDirectory.dir('basic-example')
+    from compileBasicExample
+    from('examples/basic-app/settings.yml')
+}
+def basicDistribution = tasks.register('basicDistribution', Sync) {
+    group = 'distribution'
+    description = 'Assembles the locally usable Java baseline with server, SDK, example and setup scripts.'
+    dependsOn bootJar, ':Client-Side:basicJar', basicExampleJar
+    into layout.buildDirectory.dir('basic-release/SkyLicense-Basic')
+    from(tasks.named('bootJar'))
+    from(project(':Client-Side').layout.buildDirectory.file('libs/SkyLicense-basic.jar'))
+    from basicExampleJar
+    from('deployment/basic')
+    doFirst {
+        def output = destinationDir
+        if (new File(output, 'runtime').exists() || new File(output, 'customer').exists()) {
+            throw new GradleException('Refusing to synchronize over an initialized distribution. Extract the release ZIP to a separate run directory; preserve your runtime/customer data.')
+        }
+    }
+}
+tasks.register('basicReleaseZip', Zip) {
+    group = 'distribution'
+    dependsOn basicDistribution
+    archiveFileName = 'SkyLicense-Basic-1.0.0.zip'
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+    from(layout.buildDirectory.dir('basic-release'))
+    // Never archive runtime databases or customer credentials.
+    include 'SkyLicense-Basic/SkyLicense-Server.jar', 'SkyLicense-Basic/SkyLicense-basic.jar'
+    include 'SkyLicense-Basic/DemoApp-1.0.0.jar', 'SkyLicense-Basic/README.md', 'SkyLicense-Basic/README.zh-CN.md'
+    include 'SkyLicense-Basic/SetupLocal.java', 'SkyLicense-Basic/SetupLocal.ps1'
+    include 'SkyLicense-Basic/StartServer.ps1', 'SkyLicense-Basic/StartClient.ps1'
+    include 'SkyLicense-Basic/MakeLicense.ps1', 'SkyLicense-Basic/run.sh'
+}

@@ -1,0 +1,266 @@
+name: package-sdk-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_release_tag:
+        description: New non-overwriting SDK release tag, for example sdk-v1.2.0
+        required: true
+        type: string
+      native_release_tag:
+        description: Release tag in SharkPika/MagicLicense-Client containing the four native assets
+        required: true
+        type: string
+      build_id:
+        description: 64 hexadecimal Build ID embedded in both native manifests
+        required: true
+        type: string
+      security_epoch:
+        description: Security epoch embedded in both native manifests
+        required: true
+        type: string
+      minimum_security_epoch:
+        description: Minimum epoch accepted by this SDK package
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    environment: production-sdk
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      # Configure these as protected variables in the production-sdk environment.
+      SKYLICENSE_MANIFEST_PUBLIC_KEY: ${{ vars.SKYLICENSE_MANIFEST_PUBLIC_KEY }}
+      SKYLICENSE_MIN_SECURITY_EPOCH: ${{ inputs.minimum_security_epoch }}
+      SKYLICENSE_SECURITY_EPOCH: ${{ inputs.security_epoch }}
+      SKYLICENSE_BUILD_ID: ${{ inputs.build_id }}
+      SKYLICENSE_ARTIFACT_CHANNEL: production
+      WINDOWS_CODESIGN_CERT_SHA256: ${{ vars.WINDOWS_CODESIGN_CERT_SHA256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Validate release identity inputs
+        shell: pwsh
+        run: |
+          $hex64 = '^(?i:[0-9a-f]{64})$'
+          foreach ($name in @(
+              'SKYLICENSE_MANIFEST_PUBLIC_KEY',
+              'SKYLICENSE_BUILD_ID',
+              'WINDOWS_CODESIGN_CERT_SHA256')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if (-not $value -or $value -notmatch $hex64 -or
+                $value -match '^(?i:0{64})$') {
+              throw "$name must be a non-zero 64-character hexadecimal value"
+            }
+          }
+          $minimum = 0
+          $current = 0
+          if (-not [int]::TryParse($env:SKYLICENSE_MIN_SECURITY_EPOCH, [ref]$minimum) -or
+              -not [int]::TryParse($env:SKYLICENSE_SECURITY_EPOCH, [ref]$current) -or
+              $minimum -le 0 -or $current -lt $minimum) {
+            throw 'security epochs must be positive and current epoch must not be below minimum'
+          }
+          $ciKey = 'ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c'
+          $ciBuild = '0909090909090909090909090909090909090909090909090909090909090909'
+          if ($env:SKYLICENSE_MANIFEST_PUBLIC_KEY -ieq $ciKey -or
+              $env:SKYLICENSE_BUILD_ID -ieq $ciBuild) {
+            throw 'production SDK packaging cannot use the pinned CI identity'
+          }
+          if ('${{ inputs.sdk_release_tag }}' -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
+            throw 'sdk_release_tag contains unsupported characters'
+          }
+
+      - name: Download signed native release assets
+        shell: pwsh
+        env:
+          # A fine-grained read token is needed only when the native repository is private.
+          GH_TOKEN: ${{ secrets.NATIVE_RELEASE_READ_TOKEN || github.token }}
+        run: |
+          $destination = Join-Path $env:GITHUB_WORKSPACE 'Client-Side/src/main/resources'
+          $assets = @(
+            'SkyLicense_64.dll',
+            'SkyLicense_64.dll.integrity',
+            'libSkyLicense_64.so',
+            'libSkyLicense_64.so.integrity'
+          )
+          foreach ($asset in $assets) {
+            & gh release download '${{ inputs.native_release_tag }}' `
+              --repo SharkPika/MagicLicense-Client `
+              --pattern $asset `
+              --dir $destination `
+              --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to download native release asset: $asset"
+            }
+          }
+          $metadataDirectory = Join-Path $env:RUNNER_TEMP 'native-release-metadata'
+          New-Item -ItemType Directory -Force $metadataDirectory | Out-Null
+          foreach ($asset in @('SHA256SUMS', 'native-release.json')) {
+            & gh release download '${{ inputs.native_release_tag }}' `
+              --repo SharkPika/MagicLicense-Client `
+              --pattern $asset `
+              --dir $metadataDirectory `
+              --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to download native release metadata: $asset"
+            }
+          }
+
+      - name: Verify native release checksums and metadata
+        shell: pwsh
+        run: |
+          $resourceDirectory = Join-Path $env:GITHUB_WORKSPACE 'Client-Side/src/main/resources'
+          $metadataDirectory = Join-Path $env:RUNNER_TEMP 'native-release-metadata'
+          $expectedAssets = @(
+            'SkyLicense_64.dll',
+            'SkyLicense_64.dll.integrity',
+            'libSkyLicense_64.so',
+            'libSkyLicense_64.so.integrity'
+          )
+          $checksums = @{}
+          foreach ($line in Get-Content -LiteralPath (Join-Path $metadataDirectory 'SHA256SUMS')) {
+            if ($line -notmatch '^([0-9a-fA-F]{64})  ([A-Za-z0-9._-]+)$') {
+              throw "Malformed native checksum line: $line"
+            }
+            $asset = $Matches[2]
+            if ($asset -notin $expectedAssets -or $checksums.ContainsKey($asset)) {
+              throw "Unexpected or duplicate native checksum entry: $asset"
+            }
+            $checksums[$asset] = $Matches[1].ToLowerInvariant()
+          }
+          if ($checksums.Count -ne $expectedAssets.Count) {
+            throw 'Native checksum file does not contain the exact release asset set'
+          }
+          foreach ($asset in $expectedAssets) {
+            $actual = (Get-FileHash -Algorithm SHA256 `
+              -LiteralPath (Join-Path $resourceDirectory $asset)).Hash.ToLowerInvariant()
+            if ($actual -cne $checksums[$asset]) {
+              throw "Native release checksum mismatch: $asset"
+            }
+          }
+
+          $metadata = Get-Content -Raw `
+            -LiteralPath (Join-Path $metadataDirectory 'native-release.json') |
+            ConvertFrom-Json
+          if ($metadata.format -cne 'SkyLicense native release v1' -or
+              $metadata.buildId -ine $env:SKYLICENSE_BUILD_ID -or
+              [string]$metadata.securityEpoch -cne $env:SKYLICENSE_SECURITY_EPOCH -or
+              [string]$metadata.minimumSecurityEpoch -cne $env:SKYLICENSE_MIN_SECURITY_EPOCH -or
+              $metadata.manifestPublicKey -ine $env:SKYLICENSE_MANIFEST_PUBLIC_KEY -or
+              $metadata.windowsAuthenticodeCertificateSha256 -ine `
+                $env:WINDOWS_CODESIGN_CERT_SHA256) {
+            throw 'Native release metadata does not match the protected SDK release identity'
+          }
+          $hex64 = '^(?i:[0-9a-f]{64})$'
+          if ($metadata.certificateSha256 -notmatch $hex64 -or
+              $metadata.certificateSha256 -match '^(?i:0{64})$') {
+            throw 'Native release metadata contains an invalid TLS certificate pin'
+          }
+          if ($null -ne $metadata.certificateSha256Next -and
+              ($metadata.certificateSha256Next -notmatch $hex64 -or
+               $metadata.certificateSha256Next -ieq $metadata.certificateSha256)) {
+            throw 'Native release metadata contains an invalid next TLS certificate pin'
+          }
+
+      - name: Verify Authenticode signature and signer identity
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature `
+            -LiteralPath 'Client-Side/src/main/resources/SkyLicense_64.dll'
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "Windows Authenticode verification failed: $($signature.Status)"
+          }
+          if ($null -eq $signature.SignerCertificate) {
+            throw 'Windows Authenticode signature does not contain a signer certificate'
+          }
+          $sha256 = [Security.Cryptography.SHA256]::Create()
+          try {
+            $actualCertificateHash = ([BitConverter]::ToString(
+              $sha256.ComputeHash($signature.SignerCertificate.RawData))).Replace('-', '').ToLowerInvariant()
+          } finally {
+            $sha256.Dispose()
+          }
+          if ($actualCertificateHash -cne $env:WINDOWS_CODESIGN_CERT_SHA256.ToLowerInvariant()) {
+            throw 'Windows Authenticode signer certificate does not match the protected SDK identity'
+          }
+          "authenticode_certificate_sha256=$actualCertificateHash" | Write-Output
+
+      - name: Verify native hardening, manifests, and package
+        run: .\gradlew.bat :Client-Side:clean :Client-Side:test :Client-Side:jar --no-daemon --warning-mode all
+
+      - name: Write SDK checksums and release metadata
+        shell: pwsh
+        run: |
+          $jar = 'Client-Side/build/libs/SkyLicense.jar'
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $jar).Hash.ToLowerInvariant()
+          "$hash  SkyLicense.jar" |
+            Set-Content -Encoding ASCII Client-Side/build/libs/SHA256SUMS
+          [ordered]@{
+            format = 'SkyLicense SDK release v1'
+            sdkReleaseTag = '${{ inputs.sdk_release_tag }}'
+            nativeReleaseTag = '${{ inputs.native_release_tag }}'
+            buildId = $env:SKYLICENSE_BUILD_ID.ToLowerInvariant()
+            securityEpoch = [int]$env:SKYLICENSE_SECURITY_EPOCH
+            minimumSecurityEpoch = [int]$env:SKYLICENSE_MIN_SECURITY_EPOCH
+            manifestPublicKey = $env:SKYLICENSE_MANIFEST_PUBLIC_KEY.ToLowerInvariant()
+            windowsAuthenticodeCertificateSha256 = `
+              $env:WINDOWS_CODESIGN_CERT_SHA256.ToLowerInvariant()
+            jarSha256 = $hash
+          } | ConvertTo-Json |
+            Set-Content -Encoding UTF8 Client-Side/build/libs/sdk-release.json
+
+      - name: Upload production SDK package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: skylicense-sdk-${{ inputs.native_release_tag }}
+          path: |
+            Client-Side/build/libs/SkyLicense.jar
+            Client-Side/build/libs/SHA256SUMS
+            Client-Side/build/libs/sdk-release.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attest SDK build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: Client-Side/build/libs/SkyLicense.jar
+
+      - name: Publish non-overwriting SDK release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ inputs.sdk_release_tag }}'
+          & gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            throw 'The requested SDK release tag already exists'
+          }
+          & gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            throw 'The requested SDK Git tag already exists'
+          }
+          & gh release create $tag `
+            Client-Side/build/libs/SkyLicense.jar `
+            Client-Side/build/libs/SHA256SUMS `
+            Client-Side/build/libs/sdk-release.json `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:GITHUB_SHA `
+            --title "SkyLicense SDK $tag" `
+            --notes 'Verified Windows/Linux x86-64 SDK with signed native artifacts and build provenance.'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to publish the SDK release'
+          }
