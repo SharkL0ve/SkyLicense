@@ -201,7 +201,8 @@ java -jar ../SkyLicense-Server.jar --extract-backup <备份路径>/backup.skybac
 
 ## 源码结构、前端开发和测试
 
-src/main/java 是服务端；Client-Side 是 SDK；web 是 Vue 源码；examples/basic-app 是示例；deployment 是部署工具；tools 是隔离测试。
+src/main/java 是服务端；Client-Side 是 Java SDK；web 是 Vue 前端；native 是原 MagicLicense-Client 的 Rust 客户端源码；examples/basic-app 是示例；deployment 是部署工具；tools 是隔离测试。
+根目录 Cargo.toml/Cargo.lock 管理 Rust 工作区，与 Gradle 服务端项目共存，三个项目不再需要独立源码目录。
 src/main/resources/static 保留内置前端资源，普通服务端构建不强制安装 Node.js。
 修改前端需 Node.js ^20.19.0 或 >=22.12.0、npm 10+：
 
@@ -226,6 +227,14 @@ python tools/test-basic-package.py
 包内脚本测试验收 Windows 入口；随机凭据及临时目录在源码之外创建。构建和单元测试不依赖运行配置。
 原生增强 SDK 为独立可选流程，:Client-Side:jar 继续拒绝缺失、未签名或加固不合格的原生资产，仓库不分发 CI DLL/SO。
 生产原生版需要匹配 v4 源码、发布身份、Windows 签名和 Linux 加固。
+本次合并的 [native 源码](native/README.zh-CN.md) 仍使用明文 v2 协议，不能直接连接当前 TLS/v4 服务端；禁止将其 DLL/SO 覆盖到当前 SDK。
+安装支持 edition 2024 的 Rust 工具链后，可在项目根目录独立执行现有原生单元测试：
+
+```sh
+cargo test --workspace --locked
+```
+
+基础可用版的 Gradle 构建不依赖 Rust 或 Node.js，整理目录不会将旧原生客户端混入其运行包。
 更多参考 [部署手册](DEPLOYMENT.md)、[API 文档](API-DOC.md)、[Linux](deployment/linux/README.md) / [Windows](deployment/windows/README.md) 服务模板。
 
 许可证见 [LICENSE](LICENSE)。

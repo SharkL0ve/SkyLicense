@@ -18,6 +18,9 @@ coverage/
 *.so
 *.dylib
 *.integrity
+*.rs.bk
+/SkyLicense.map
+/native/SkyLicense.map
 *.tsbuildinfo
 *.local.json
 !gradle/wrapper/gradle-wrapper.jar

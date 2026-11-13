@@ -1,0 +1,50 @@
+[package]
+name = "SkyLicense"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "SkyLicense_64"
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.21.1"
+
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+#bytebuf
+bytes = "1.4"
+byteorder = "1.4"
+#encrypt
+rand = "0.8.5"
+pbkdf2 = "0.11.0"
+aes = "0.8.4"
+aes-gcm = "0.10.3"
+block-modes = "0.9.1"
+block-padding = "0.3.2"
+generic-array = "0.14.6"
+base64 = "0.22.1"
+flate2 = "1.0"
+sha2 = "0.10"
+hmac = "0.12"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+zeroize = { version = "1", features = ["derive"] }
+#hashmap
+fxhash = "0.2.1"
+#protection
+libc = "0.2"
+sysinfo = "0.28"
+lazy_static = "1.4"
+winapi = { version = "0.3.0", features = ["processthreadsapi", "memoryapi", "debugapi", "libloaderapi", "psapi", "winnt", "winbase", "handleapi", "wow64apiset", "tlhelp32", "ntdef", "errhandlingapi", "minwindef", "processenv", "fileapi", "namedpipeapi"] }
+nix = { version = "0.26", features = ["ptrace", "process", "mman"] }
+ctor = "0.2"
+chrono = "0.4"
+thiserror = "1.0"
+ntapi = "0.4"
+#obfuscation
+obfuse = "1.0.1"
+rust-native-obf = "0.1.1"

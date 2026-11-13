@@ -223,6 +223,8 @@ src/main/java/       Server, TLS/v4, license policy, audit and Web API
 src/main/resources/  Application resources and bundled console assets
 Client-Side/        Basic SDK, optional native bridge and release verifiers
 web/                Vue source and npm lockfile
+native/             Imported legacy Rust JNI client (v2; not the current v4 SDK)
+Cargo.toml          Rust workspace; Cargo.lock pins its dependencies
 examples/basic-app/ Protected example source and settings.yml
 deployment/         Setup tools, service templates and non-secret config example
 tools/              Isolated integration tests
@@ -259,6 +261,15 @@ Builds and unit tests do not need runtime configuration.
 
 The native-enhanced SDK is optional and separate from Basic. `:Client-Side:jar` deliberately rejects missing, unsigned or non-hardened native assets.
 Production native packaging needs matching v4 source, release identity, Windows signing and Linux hardening. CI DLL/SO files are not distributed here.
+The former `MagicLicense-Client` source is now preserved in [`native/`](native/README.md) within this same repository.
+It still sends plaintext protocol v2 and cannot authenticate to the TLS/v4 server. Do not copy its DLL/SO into the current SDK.
+To run its existing unit tests independently, install a Rust toolchain supporting edition 2024 and run from the repository root:
+
+```sh
+cargo test --workspace --locked
+```
+
+The root Cargo workspace and Gradle project are independent. Building the working Basic edition does not require Rust or Node.js.
 See [DEPLOYMENT.md](DEPLOYMENT.md), [API-DOC.md](API-DOC.md), and the [Linux](deployment/linux/README.md)/[Windows](deployment/windows/README.md) service guides.
 
 License: see [LICENSE](LICENSE).

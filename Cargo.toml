@@ -1,0 +1,13 @@
+[workspace]
+members = ["native"]
+resolver = "3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = false
+panic = "abort"
+strip = true
+incremental = false
+split-debuginfo = "zstd"

@@ -3,17 +3,17 @@
 当前可直接运行的 **Java 基础版** 请先使用 [README 顶部流程](README.md) 或
 [基础版逐步使用手册](deployment/basic/README.md)。它通过 `basicReleaseZip` 打包，
 不依赖 DLL/SO；受保护程序认证、入口、ACK、心跳和在线撤销已做真实验证。
-下面保留的是原生增强版发布与部署流程，其原生签名材料仍需另行准备。
+下面保留的是原生增强版发布与部署规范，需要另外恢复匹配的 v4 原生源码及签名材料。
+本仓库 native/ 是旧 v2 客户端源码，不包含下文提及的 release-native、sign_artifact 或 verify_artifact 实现，不能按这些规范直接发布。
 
 这份手册是一次完整交付的执行顺序。它假定服务端、Vue 前端和 Java SDK
 已经从同一批源码构建；协议为 v4，认证和后台都只接受 TLS 1.3。
 
 ## 0. 先确认当前目录能否直接运行
 
-当前源码目录默认不能直接用于生产：`config.json` 的
-`allowedClientBuildIds` 为空，部署目录没有生产 TLS 证书，仓库中的临时
-原生文件是 CI 身份且不属于客户交付物；源码工作区 ACL 也不是 owner-only，且尚未
-配置审计、MFA 加密和首次管理员凭据。必须先完成第 1 节的发布流程，并按第 3–4 节建立独立部署目录。
+当前源码目录默认不能直接用于生产：真实 config.json、生产 TLS 证书、原生库和凭据均不随源码提交。
+源码工作区也不是独立的 owner-only 部署目录。基础版请使用 README 的初始化脚本生成本地测试部署；
+原生增强版必须先恢复匹配源码、完成第 1 节的发布流程，再按第 3–4 节建立独立部署目录并配置凭据。
 
 ## 1. 生成一次正式发布身份
 
@@ -42,17 +42,17 @@ CI DLL/SO 打包。
 前端要求 Node.js `^20.19.0` 或 `>=22.12.0`：
 
 ```powershell
-cd F:\Code\Source\skylicense
+cd F:\Code\Source\SkyLicense\web
 npm ci --ignore-scripts
 npm run typecheck
 npm run build
 ```
 
-将 `dist/` 完整镜像到服务端的
-`src/main/resources/static/`，删除旧的内容哈希文件。服务端要求 Java 17：
+将 web/dist 完整镜像到同一仓库根目录的 src/main/resources/static/，
+删除旧的内容哈希文件。服务端要求 Java 17：
 
 ```powershell
-cd F:\Code\Source\MagicLicense
+cd F:\Code\Source\SkyLicense
 .\gradlew.bat clean test :Client-Side:test bootJar --no-daemon --warning-mode all
 ```
 
