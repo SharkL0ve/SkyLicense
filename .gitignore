@@ -23,6 +23,8 @@ coverage/
 /native/SkyLicense.map
 *.tsbuildinfo
 *.local.json
+/*.cdx.json
+/native/*.cdx.json
 !gradle/wrapper/gradle-wrapper.jar
 /Client-Side/src/main/resources/old/
 

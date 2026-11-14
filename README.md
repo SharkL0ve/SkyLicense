@@ -223,7 +223,7 @@ src/main/java/       Server, TLS/v4, license policy, audit and Web API
 src/main/resources/  Application resources and bundled console assets
 Client-Side/        Basic SDK, optional native bridge and release verifiers
 web/                Vue source and npm lockfile
-native/             Imported legacy Rust JNI client (v2; not the current v4 SDK)
+native/             Current SkyLicense-Client Rust JNI implementation (TLS/v4)
 Cargo.toml          Rust workspace; Cargo.lock pins its dependencies
 examples/basic-app/ Protected example source and settings.yml
 deployment/         Setup tools, service templates and non-secret config example
@@ -242,12 +242,12 @@ npm run build
 Mirror `web/dist/` exactly into `src/main/resources/static/`, removing obsolete hashed assets, and rebuild the server.
 Do not publish `node_modules/` or runtime environment files. The API defaults to same-origin `/api`.
 
-The current frontend dependency audit reports known advisories. Review `npm audit` and plan compatible dependency upgrades
-before public deployment; passing functional tests is not a full security certification.
+Compatible dependency updates removed the known high-severity frontend findings. Five moderate development-tool advisories
+remain; review `npm audit` before public deployment. Functional verification is not a full security certification.
 
 ## Tests and optional native SDK
 
-The baseline passed **252 server tests and 25 SDK tests**, plus packaged-JAR authentication, entry/ACK, heartbeats,
+The baseline passed **255 server tests and 25 SDK tests**, plus packaged-JAR authentication, entry/ACK, heartbeats,
 rejection cases, online revocation, backup extraction and restart. Isolated tests need Python 3.10+ and `cryptography`:
 
 ```sh
@@ -260,16 +260,28 @@ The package test exercises Windows PowerShell scripts. Tests create temporary di
 Builds and unit tests do not need runtime configuration.
 
 The native-enhanced SDK is optional and separate from Basic. `:Client-Side:jar` deliberately rejects missing, unsigned or non-hardened native assets.
-Production native packaging needs matching v4 source, release identity, Windows signing and Linux hardening. CI DLL/SO files are not distributed here.
-The former `MagicLicense-Client` source is now preserved in [`native/`](native/README.md) within this same repository.
-It still sends plaintext protocol v2 and cannot authenticate to the TLS/v4 server. Do not copy its DLL/SO into the current SDK.
-To run its existing unit tests independently, install a Rust toolchain supporting edition 2024 and run from the repository root:
+The updated [SkyLicense-Client](native/README.md) under `native/` implements the current TLS/v4 protocol.
+The old source was backed up outside this repository at `F:\Code\Source\MagicLicense-Client` and is not part of the active workspace.
+For a real **Strict** native system test, install Rust 1.97.1, JDK 17/21 and Python `cryptography`, build the Java classes/server
+as above, and run from the repository root. Windows also needs MSVC Build Tools:
 
 ```sh
-cargo test --workspace --locked
+python tools/local-smoke-test.py --native --build-native
 ```
 
-The root Cargo workspace and Gradle project are independent. Building the working Basic edition does not require Rust or Node.js.
+This builds and signs a CI-test native library, verifies binary hardening, and runs a real encrypted/transformed Java application.
+It checks authentication, entry/ACK, verified heartbeats, repeat-auth rejection, license denial cases, untrusted TLS,
+missing/tampered manifests, live revocation, host disable notification, audit integrity, backup and restore.
+Credentials and certificates are generated only in a new private temporary directory; the server is stopped after the test.
+The public CI identity and test certificate are **not production credentials**.
+
+Customer integration is documented in the [native guide](native/README.md) and [deployment manual](DEPLOYMENT.md).
+Protocol matching, regression coverage and remaining limits are recorded in [VALIDATION.md](VALIDATION.md).
+Use `cn.sky.license.NativeLauncher` with both JVM hardening flags, or honor `disablePlugin()` in an embedded host and call
+`SkyLicense.close()` at shutdown. Production requires your own TLS, signing identity and Windows Authenticode material.
+The native release and SDK packaging workflows are both maintained here; release gates remain enabled.
+
+The root Cargo workspace and Gradle project are independent. Building Basic does not require Rust or Node.js.
 See [DEPLOYMENT.md](DEPLOYMENT.md), [API-DOC.md](API-DOC.md), and the [Linux](deployment/linux/README.md)/[Windows](deployment/windows/README.md) service guides.
 
 License: see [LICENSE](LICENSE).

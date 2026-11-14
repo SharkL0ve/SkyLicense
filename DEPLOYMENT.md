@@ -3,15 +3,15 @@
 本文档描述协议 v4、TLS 1.3 和 Web 管理后台统一后的生产流程。旧控制台发证、明文 HTTP、旧 WebSocket 远控和协议 v1-v3 均不再可用。
 
 当前已验证可用的版本请先阅读 [英文 README](README.md) / [中文 README](README.zh-CN.md) 顶部的 Java 基础版流程。
-以下原生发布章节是增强版目标规范，不代表本仓库 native/ 已实现：此次合并的 Rust 源码仍为明文 v2，
-没有下文所需的 v4 发布工具、签名清单或 release-native 工作流，不能直接用于当前服务端。
+native/ 已采用新版 SkyLicense-Client，实现 v4、TLS、签名清单及发布工具，测试入口见根目录 README。
+正式发布仍须配置本仓库 native-production / production-sdk 受保护环境及真实签名材料。
 
 ## 1. 系统组成
 
 - `SkyLicense-Server.jar`：HTTPS 管理后台、Web API、SQLite 数据库、TLS 原生认证和资源下发。
 - `web/`：Vue 管理前端，生产构建后嵌入服务端 JAR，推荐与 API 同源部署。
 - `Client-Side/`：Java 基础 SDK 和可选原生桥接；正式增强版打包需要额外提供 Windows/Linux x86-64 原生库和签名清单。
-- `native/`：合并的旧版 Rust 客户端源码；尚不能承担当前 v4 TLS、发布身份和 ACK 认证流程。
+- `native/`：新版 Rust 客户端，负责 v4 TLS、发布身份、挑战、资源与方法解密、ACK、签名心跳和运行时保护。
 
 ## 2. 生产发布顺序
 
@@ -71,13 +71,13 @@ x86-64 ELF64 shared object，包含 `GNU_RELRO`、不可执行 `GNU_STACK`、
 可执行栈、RWX 和缺失 `BIND_NOW` 的负向测试。Gradle、Rust 脚本和 Authenticode
 验证必须全部通过，任一项不能互相替代。
 
-### 2.1 外部 v4 原生资产发布规范（非当前 native/ 的能力）
+### 2.1 同仓库原生与 SDK 两阶段发布
 
 原生二进制不提交到服务端仓库。普通服务端 CI 会明确验证缺少四个原生产物时
 SDK 打包必须失败；正式交付使用两阶段受保护工作流：
 
-1. 在拥有完整 v4 实现及 release-native 工作流的原生发布仓库配置 `native-production` Environment；
-   当前 SDK 工作流仍从 SharkPika/MagicLicense-Client 下载外部 Release，不会自动构建本仓库的旧 native/。变量包括
+1. 在本仓库配置 `native-production` Environment；release-native 构建 native/ 中的工作区成员，
+   package-sdk-release 从本仓库原生 Release 下载并验证资产。变量包括
    `SKYLICENSE_MANIFEST_PUBLIC_KEY`、`SKYLICENSE_CERT_SHA256`、可选的
    `SKYLICENSE_CERT_SHA256_NEXT`、代码签名证书 DER 的
    `WINDOWS_CODESIGN_CERT_SHA256` 和 `WINDOWS_CODESIGN_TIMESTAMP_URL`；Secret 包括

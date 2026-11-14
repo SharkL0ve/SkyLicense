@@ -1,14 +1,11 @@
-/// Java Agent 检测与防护模块
-/// 通过 JNI 检测 -javaagent / -agentlib / JVMTI / Instrumentation API 等
-/// 并在检测到时触发防护措施。
+//! Java Agent detection through JVM arguments, known classes, JDWP, and
+//! runtime module observations.
 
-#[allow(unused_imports)]
-use jni::objects::{JObject, JString, JValue};
 use jni::JNIEnv;
+use jni::objects::{JString, JValue};
 use std::ops::DerefMut;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 是否已检测到 agent（全局标记，一旦为 true 不可恢复）
 static AGENT_DETECTED: OnceLock<AtomicBool> = OnceLock::new();
@@ -38,12 +35,12 @@ impl AgentDetectionResult {
 
 /// 通过 ManagementFactory.getRuntimeMXBean().getInputArguments() 获取 JVM 参数
 /// 检测 -javaagent: / -agentlib: / -agentpath: / -Xrunjdwp
-fn check_jvm_args(env: &JNIEnv) -> bool {
+fn jvm_input_arguments(env: &JNIEnv) -> Option<Vec<String>> {
     let mut env = unsafe { env.unsafe_clone() };
 
     let mgmt_class = match env.find_class("java/lang/management/ManagementFactory") {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => return None,
     };
 
     // getRuntimeMXBean() -> RuntimeMXBean
@@ -55,34 +52,34 @@ fn check_jvm_args(env: &JNIEnv) -> bool {
     ) {
         Ok(v) => match v.l() {
             Ok(obj) => obj,
-            Err(_) => return false,
+            Err(_) => return None,
         },
-        Err(_) => return false,
+        Err(_) => return None,
     };
 
     // getInputArguments() -> List<String>
-    let args_list = match env.call_method(
-        &mxbean,
-        "getInputArguments",
-        "()Ljava/util/List;",
-        &[],
-    ) {
+    let args_list = match env.call_method(&mxbean, "getInputArguments", "()Ljava/util/List;", &[]) {
         Ok(v) => match v.l() {
             Ok(obj) => obj,
-            Err(_) => return false,
+            Err(_) => return None,
         },
-        Err(_) => return false,
+        Err(_) => return None,
     };
 
     // List.size()
     let size = match env.call_method(&args_list, "size", "()I", &[]) {
         Ok(v) => match v.i() {
             Ok(i) => i,
-            Err(_) => return false,
+            Err(_) => return None,
         },
-        Err(_) => return false,
+        Err(_) => return None,
     };
 
+    if !(0..=4096).contains(&size) {
+        return None;
+    }
+
+    let mut arguments = Vec::with_capacity(size as usize);
     for i in 0..size {
         let arg_obj = match env.call_method(
             &args_list,
@@ -106,18 +103,27 @@ fn check_jvm_args(env: &JNIEnv) -> bool {
             Err(_) => continue,
         };
 
-        let lower = arg_str.to_lowercase();
-        if lower.starts_with("-javaagent:")
+        arguments.push(arg_str);
+    }
+
+    Some(arguments)
+}
+
+fn contains_agent_argument(arguments: &[String]) -> bool {
+    arguments.iter().any(|argument| {
+        let lower = argument.to_ascii_lowercase();
+        lower.starts_with("-javaagent:")
             || lower.starts_with("-agentlib:")
             || lower.starts_with("-agentpath:")
             || lower.contains("-xrunjdwp")
             || lower.contains("jdwp=transport")
-        {
-            return true;
-        }
-    }
+    })
+}
 
-    false
+fn check_jvm_args(env: &JNIEnv) -> bool {
+    jvm_input_arguments(env)
+        .as_deref()
+        .is_some_and(contains_agent_argument)
 }
 
 // ============================================================
@@ -174,7 +180,9 @@ fn check_instrumentation_loaded(env: &JNIEnv) -> bool {
 
     // 检查是否有 java.lang.instrument.ClassFileTransformer 的实现类被加载
     // 这比检查 InstrumentationImpl 更精确
-    let has_transformer = env.find_class("java/lang/instrument/ClassFileTransformer").is_ok();
+    let has_transformer = env
+        .find_class("java/lang/instrument/ClassFileTransformer")
+        .is_ok();
     let _ = env.exception_clear();
 
     if !has_transformer {
@@ -197,10 +205,10 @@ fn check_jdwp_active(env: &JNIEnv) -> bool {
     let mut env = unsafe { env.unsafe_clone() };
 
     // 检查系统属性 sun.jdwp.listenerAddress（只有 JDWP 真正启动时才会设置）
-    if let Some(val) = get_system_property(&mut env, "sun.jdwp.listenerAddress") {
-        if !val.is_empty() {
-            return true;
-        }
+    if let Some(val) = get_system_property(&mut env, "sun.jdwp.listenerAddress")
+        && !val.is_empty()
+    {
+        return true;
     }
 
     false
@@ -245,12 +253,16 @@ fn get_system_property(env: &mut JNIEnv, key: &str) -> Option<String> {
     let system_class = env.find_class("java/lang/System").ok()?;
     let key_str = env.new_string(key).ok()?;
 
-    let result = env.call_static_method(
-        &system_class,
-        "getProperty",
-        "(Ljava/lang/String;)Ljava/lang/String;",
-        &[JValue::from(&key_str)],
-    ).ok()?.l().ok()?;
+    let result = env
+        .call_static_method(
+            &system_class,
+            "getProperty",
+            "(Ljava/lang/String;)Ljava/lang/String;",
+            &[JValue::from(&key_str)],
+        )
+        .ok()?
+        .l()
+        .ok()?;
 
     if result.is_null() {
         return None;
@@ -270,9 +282,80 @@ fn set_system_property(env: &mut JNIEnv, key: &str, value: &str) -> Option<()> {
         "setProperty",
         "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
         &[JValue::from(&key_str), JValue::from(&val_str)],
-    ).ok()?;
+    )
+    .ok()?;
 
     Some(())
+}
+
+fn parse_jvm_feature_version(version: &str) -> Option<u32> {
+    let normalized = version.strip_prefix("1.").unwrap_or(version);
+    normalized.split('.').next()?.parse().ok()
+}
+
+fn jvm_hardening_gaps(arguments: &[String], feature_version: Option<u32>) -> Vec<&'static str> {
+    let mut gaps = Vec::new();
+    if !arguments
+        .iter()
+        .any(|argument| argument.eq_ignore_ascii_case("-XX:+DisableAttachMechanism"))
+    {
+        gaps.push("missing -XX:+DisableAttachMechanism");
+    }
+    if feature_version.is_some_and(|version| version >= 9)
+        && !arguments
+            .iter()
+            .any(|argument| argument.eq_ignore_ascii_case("-XX:-EnableDynamicAgentLoading"))
+    {
+        gaps.push("missing -XX:-EnableDynamicAgentLoading");
+    }
+    gaps
+}
+
+fn validate_jvm_hardening(env: &JNIEnv) -> Result<(), String> {
+    let policy = crate::security::policy();
+    let feature_version = {
+        let mut env = unsafe { env.unsafe_clone() };
+        get_system_property(&mut env, "java.specification.version")
+            .as_deref()
+            .and_then(parse_jvm_feature_version)
+    };
+    let Some(arguments) = jvm_input_arguments(env) else {
+        crate::security::submit(crate::security::SecurityEvidence::new(
+            crate::security::EvidenceKind::RuntimeFailure,
+            crate::security::EvidenceConfidence::Medium,
+            "attach.jvm_arguments",
+            "unable to verify the JVM attach-hardening arguments",
+        ));
+        return if policy.require_jvm_attach_hardening {
+            Err("E024".to_string())
+        } else {
+            Ok(())
+        };
+    };
+
+    let gaps = jvm_hardening_gaps(&arguments, feature_version);
+    for gap in &gaps {
+        crate::security::submit(crate::security::SecurityEvidence::new(
+            crate::security::EvidenceKind::AttachAttempt,
+            match policy.profile {
+                crate::security::SecurityProfile::Compatible => {
+                    crate::security::EvidenceConfidence::Low
+                }
+                crate::security::SecurityProfile::Balanced
+                | crate::security::SecurityProfile::Strict => {
+                    crate::security::EvidenceConfidence::Medium
+                }
+            },
+            "attach.jvm_startup_policy",
+            *gap,
+        ));
+    }
+
+    if policy.require_jvm_attach_hardening && !gaps.is_empty() {
+        Err("E024".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 // ============================================================
@@ -302,7 +385,10 @@ pub fn initial_agent_check(env: &JNIEnv) -> Result<(), String> {
         crate::debug_log!("[SkyLicense] Agent detected: Instrumentation class loaded");
     }
     if !result.known_agent_classes.is_empty() {
-        crate::debug_log!("[SkyLicense] Agent detected: known classes found: {:?}", result.known_agent_classes);
+        crate::debug_log!(
+            "[SkyLicense] Agent detected: known classes found: {:?}",
+            result.known_agent_classes
+        );
     }
     if result.jdwp_active {
         crate::debug_log!("[SkyLicense] Agent detected: JDWP active");
@@ -313,8 +399,18 @@ pub fn initial_agent_check(env: &JNIEnv) -> Result<(), String> {
 
     if result.is_compromised() {
         AGENT_DETECTED.get_or_init(|| AtomicBool::new(true));
-        return Err("E020".to_string());
+        crate::security::submit(crate::security::SecurityEvidence::new(
+            crate::security::EvidenceKind::JavaAgent,
+            crate::security::EvidenceConfidence::High,
+            "agent.initial",
+            "Java/JVMTI agent indicators were present during protection initialization",
+        ));
+        if crate::security::state().is_terminal() {
+            return Err("E020".to_string());
+        }
     }
+
+    validate_jvm_hardening(env)?;
 
     // 禁用后续 attach
     disable_future_agent_loading(env);
@@ -327,34 +423,66 @@ pub fn initial_agent_check(env: &JNIEnv) -> Result<(), String> {
 /// 启动后台 agent 监控线程。
 /// 定期通过 JNI 重新检测是否有新 agent 被加载。
 /// 需要传入 JavaVM 指针以便在新线程中 attach。
-pub fn start_agent_monitor(vm: jni::JavaVM) {
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(2));
-
-            // Attach 当前线程到 JVM
+pub fn start_agent_monitor(vm: jni::JavaVM) -> Result<(), String> {
+    crate::security::spawn_ready_monitor(
+        "sky-agent-monitor",
+        std::time::Duration::from_secs(5),
+        move |stop, ready| {
             let mut guard = match vm.attach_current_thread() {
-                Ok(g) => g,
-                Err(_) => continue,
+                Ok(guard) => guard,
+                Err(error) => {
+                    let _ = ready.send(Err(format!(
+                        "failed to attach agent monitor to JVM: {error}"
+                    )));
+                    return;
+                }
             };
 
-            let env: &mut JNIEnv = guard.deref_mut();
-
-            // 重新检测
-            let result = detect_agents(env);
-            if result.is_compromised() {
-                // Agent 被运行时注入 — 必须退出，因为 agent 可以读取 JVM 内部类信息
-                if let Some(flag) = AGENT_DETECTED.get() {
-                    flag.store(true, Ordering::Relaxed);
+            let initial = detect_agents(guard.deref_mut());
+            if initial.is_compromised() {
+                crate::security::submit(crate::security::SecurityEvidence::new(
+                    crate::security::EvidenceKind::JavaAgent,
+                    crate::security::EvidenceConfidence::High,
+                    "agent.monitor_initial",
+                    "agent indicators appeared before the runtime monitor became ready",
+                ));
+                if crate::security::state().is_terminal() {
+                    let _ = ready.send(Err(
+                        "agent indicators detected during monitor startup".to_string()
+                    ));
+                    return;
                 }
-                crate::debug_log!("[SkyLicense] !!! Runtime agent injection detected — exiting !!!");
-                unsafe { crate::corrupt_state(); }
-                let delay = (rand::random::<u64>() % 2500) + 500;
-                std::thread::sleep(Duration::from_millis(delay));
-                std::process::exit(0);
             }
-        }
-    });
+            if ready.send(Ok(())).is_err() {
+                return;
+            }
+
+            while !stop.load(Ordering::Acquire) {
+                if crate::security::wait_for_stop(&stop, std::time::Duration::from_secs(2)) {
+                    break;
+                }
+
+                let env: &mut JNIEnv = guard.deref_mut();
+
+                // 重新检测
+                let result = detect_agents(env);
+                if result.is_compromised() {
+                    // Agent 被运行时注入 — 必须退出，因为 agent 可以读取 JVM 内部类信息
+                    if let Some(flag) = AGENT_DETECTED.get() {
+                        flag.store(true, Ordering::Release);
+                    }
+                    let evidence = crate::security::SecurityEvidence::new(
+                        crate::security::EvidenceKind::JavaAgent,
+                        crate::security::EvidenceConfidence::High,
+                        "agent.runtime",
+                        "runtime Java/JVMTI agent indicators detected",
+                    );
+                    crate::security::submit(evidence);
+                    break;
+                }
+            }
+        },
+    )
 }
 
 /// 快速检查：agent 是否已被检测到（无 JNI 开销，仅读原子变量）
@@ -366,3 +494,44 @@ pub fn is_agent_detected() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arguments(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn parses_legacy_and_modern_jvm_versions() {
+        assert_eq!(parse_jvm_feature_version("1.8"), Some(8));
+        assert_eq!(parse_jvm_feature_version("17"), Some(17));
+        assert_eq!(parse_jvm_feature_version("21.0.2"), Some(21));
+        assert_eq!(parse_jvm_feature_version("invalid"), None);
+    }
+
+    #[test]
+    fn hardening_policy_is_version_aware() {
+        let hardened = arguments(&[
+            "-XX:+DisableAttachMechanism",
+            "-XX:-EnableDynamicAgentLoading",
+        ]);
+        assert!(jvm_hardening_gaps(&hardened, Some(21)).is_empty());
+
+        let jdk8 = arguments(&["-XX:+DisableAttachMechanism"]);
+        assert!(jvm_hardening_gaps(&jdk8, Some(8)).is_empty());
+
+        let gaps = jvm_hardening_gaps(&[], Some(21));
+        assert_eq!(gaps.len(), 2);
+    }
+
+    #[test]
+    fn agent_argument_matching_avoids_unrelated_options() {
+        assert!(contains_agent_argument(&arguments(&[
+            "-agentlib:jdwp=transport=dt_socket"
+        ])));
+        assert!(!contains_agent_argument(&arguments(&[
+            "-Dapplication.agentName=ordinary"
+        ])));
+    }
+}

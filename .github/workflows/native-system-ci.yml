@@ -1,0 +1,67 @@
+name: native-system-ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            toolchain: 1.97.1-x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            toolchain: 1.97.1-x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    env:
+      TMPDIR: ${{ runner.temp }}
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+      SKYLICENSE_MANIFEST_PUBLIC_KEY: ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
+      SKYLICENSE_MIN_SECURITY_EPOCH: "1"
+      SKYLICENSE_SECURITY_EPOCH: "1"
+      SKYLICENSE_BUILD_ID: 0909090909090909090909090909090909090909090909090909090909090909
+      SKYLICENSE_CERT_SHA256: 1111111111111111111111111111111111111111111111111111111111111111
+      SKYLICENSE_ARTIFACT_CHANNEL: ci-test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Formatting and static checks
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Native unit tests
+        run: cargo test --workspace --locked -- --test-threads=1
+      - name: Java server and SDK
+        shell: bash
+        run: ./gradlew test :Client-Side:test bootJar basicReleaseZip --no-daemon --warning-mode all
+      - name: Install isolated-test dependency
+        run: python -m pip install cryptography
+      - name: Real Strict TLS v4 system test
+        run: python tools/local-smoke-test.py --native --build-native
+      - name: Basic SDK system regression
+        run: python tools/local-smoke-test.py --basic
+      - name: Upload non-secret native diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-diagnostics-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/SkyLicenseSmoke-*/native*.log
+            ${{ runner.temp }}/SkyLicenseSmoke-*/result.json
+          if-no-files-found: ignore
+          retention-days: 3

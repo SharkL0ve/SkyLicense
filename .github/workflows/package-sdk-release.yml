@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       native_release_tag:
-        description: Release tag in SharkPika/MagicLicense-Client containing the four native assets
+        description: Native release tag in this repository containing the four signed native assets
         required: true
         type: string
       build_id:
@@ -99,7 +99,7 @@ jobs:
           )
           foreach ($asset in $assets) {
             & gh release download '${{ inputs.native_release_tag }}' `
-              --repo SharkPika/MagicLicense-Client `
+              --repo $env:GITHUB_REPOSITORY `
               --pattern $asset `
               --dir $destination `
               --clobber
@@ -111,7 +111,7 @@ jobs:
           New-Item -ItemType Directory -Force $metadataDirectory | Out-Null
           foreach ($asset in @('SHA256SUMS', 'native-release.json')) {
             & gh release download '${{ inputs.native_release_tag }}' `
-              --repo SharkPika/MagicLicense-Client `
+              --repo $env:GITHUB_REPOSITORY `
               --pattern $asset `
               --dir $metadataDirectory `
               --clobber

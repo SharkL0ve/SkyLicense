@@ -143,10 +143,15 @@ def totp(secret):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native", action="store_true", help="also attempt the existing Windows/Linux SDK library")
+    parser.add_argument("--build-native", action="store_true", help="build/sign/harden the current Strict TLS native client using the public CI test identity")
+    parser.add_argument("--rust-toolchain", help="optional rustup toolchain override, e.g. nightly")
+    parser.add_argument("--native-target", help="optional Rust target triple; Windows defaults to x86_64-pc-windows-msvc")
     parser.add_argument("--basic", action="store_true", help="test the packaged Java-only SDK, including heartbeat and rejection")
     args = parser.parse_args()
     if args.basic and args.native:
         parser.error("choose --basic or --native")
+    if args.build_native and not args.native:
+        parser.error("--build-native requires --native")
     root = Path(tempfile.mkdtemp(prefix="SkyLicenseSmoke-"))
     private_directory(root)
     deploy = root / "deployment"
@@ -158,6 +163,49 @@ def main():
     tls_material(root / "certs")
     native_name = "SkyLicense_64.dll" if os.name == "nt" else "libSkyLicense_64.so"
     native_resources = REPO / "Client-Side/src/main/resources"
+    if args.build_native:
+        native_resources = root / "native-resources"
+        private_directory(native_resources)
+        build_env = {k: v for k, v in os.environ.items()
+                     if not k.startswith("SKYLICENSE_") and k not in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS")}
+        certificate = x509.load_pem_x509_certificate((root / "certs/auth-chain.pem").read_bytes())
+        build_env.update({"SKYLICENSE_MANIFEST_PUBLIC_KEY": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+                          "SKYLICENSE_BUILD_ID": "09" * 32, "SKYLICENSE_MIN_SECURITY_EPOCH": "1",
+                          "SKYLICENSE_SECURITY_EPOCH": "1", "SKYLICENSE_ARTIFACT_CHANNEL": "ci-test",
+                          "SKYLICENSE_CERT_SHA256": certificate.fingerprint(hashes.SHA256()).hex()})
+        target = args.native_target or ("x86_64-pc-windows-msvc" if os.name == "nt" else None)
+        cargo = ["cargo"] + (["+" + args.rust_toolchain] if args.rust_toolchain else [])
+        build = cargo + ["build", "--release", "--locked", "--lib", "--bin", "sign_artifact", "--bin", "verify_artifact"]
+        if target:
+            build += ["--target", target]
+        result = subprocess.run(build, cwd=REPO, env=build_env, capture_output=True, timeout=900)
+        write(root / "native-build.log", result.stdout + result.stderr)
+        if result.returncode:
+            print("artifacts=" + str(root), flush=True)
+            raise RuntimeError("strict native build failed; inspect private native-build.log")
+        output = REPO / "target" / target / "release" if target else REPO / "target/release"
+        artifact = output / native_name
+        executable = ".exe" if os.name == "nt" else ""
+        build_env["SKYLICENSE_MANIFEST_PRIVATE_KEY"] = bytes([7] * 32).hex()  # Public CI test seed, never a production identity.
+        result = subprocess.run([str(output / ("sign_artifact" + executable)), str(artifact)],
+                                cwd=REPO, env=build_env, capture_output=True, timeout=30)
+        write(root / "native-sign.log", result.stdout + result.stderr)
+        if result.returncode:
+            raise RuntimeError("native CI manifest signing failed")
+        build_env.pop("SKYLICENSE_MANIFEST_PRIVATE_KEY")
+        build_env["SKYLICENSE_MANIFEST_VERIFIER"] = str(output / ("verify_artifact" + executable))
+        if os.name == "nt":
+            verify = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(REPO / "native/tools/verify-pe-hardening.ps1"),
+                      "-Path", str(artifact), "-RequireIntegrityManifest"]
+        else:
+            verify = ["bash", str(REPO / "native/tools/verify-elf-hardening.sh"), str(artifact), "--require-integrity-manifest"]
+        result = subprocess.run(verify, cwd=REPO, env=build_env, capture_output=True, timeout=45)
+        write(root / "native-hardening.log", result.stdout + result.stderr)
+        if result.returncode:
+            raise RuntimeError("native binary/manifest verification failed")
+        shutil.copy2(artifact, native_resources / native_name)
+        shutil.copy2(str(artifact) + ".integrity", native_resources / (native_name + ".integrity"))
+        print("PASS current Strict native release build, signed CI manifest and platform hardening", flush=True)
     build_id, epoch = secrets.token_hex(32), 1
     if args.basic:
         build_id = "7f10d350d700568181fc244d4f3b779c75ab57316ae8e0e573a1802b815c33f0"
@@ -174,6 +222,8 @@ def main():
         "allowedClientBuildIds": [build_id], "allowedWebOrigins": []}
     write(deploy / "config.json", json.dumps(config))
     env = {k: v for k, v in os.environ.items() if not k.startswith("SKYLICENSE_")}
+    if args.native:
+        env["SKYLICENSE_NATIVE_CA_CERT_FILE"] = str(root / "certs/auth-chain.pem")
     password = "Smoke#" + secrets.token_urlsafe(24)
     for name, value in {"OPERATION_LOG_HMAC_KEY": secrets.token_hex(32),
                         "MFA_ENCRYPTION_KEY": secrets.token_hex(32),
@@ -258,12 +308,13 @@ def main():
         pid = program["id"]
         passed("CSRF rejection, user creation and role isolation")
         fixture = root / "fixture"
-        write(fixture / "SmokeEntry.java", 'public class SmokeEntry { public static void start() { verify(); System.setProperty("skylicense.smoke.entry", "true"); } private static void verify() { String text = message(); if (!"hello".equals(text) || !text.toUpperCase().equals("HELLO")) throw new IllegalStateException("bridge failed"); } private static String message() { return "hello"; } }')
+        shutil.copy2(REPO / "tools/fixtures/SmokeEntry.java", fixture / "SmokeEntry.java")
         subprocess.run(["javac", "--release", "17", str(fixture / "SmokeEntry.java")], check=True, capture_output=True)
         jar = fixture / "protected.jar"
         with zipfile.ZipFile(jar, "w") as archive:
             archive.writestr("settings.yml", "Name: LocalSmoke\nVersion: 1.0.0\nEntryClass: SmokeEntry\nEntryPoint: start\nInfPort: false\nKeepClasses: []\n")
-            archive.write(fixture / "SmokeEntry.class", "SmokeEntry.class")
+            for class_file in fixture.glob("SmokeEntry*.class"):
+                archive.write(class_file, class_file.name)
         boundary = "Smoke" + secrets.token_hex(12)
         body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"version\"\r\n\r\n1.0.0\r\n"
                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"protected.jar\"\r\nContent-Type: application/java-archive\r\n\r\n").encode() + jar.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
@@ -348,16 +399,105 @@ def main():
             passed("live license ban causes signed heartbeat revocation and host disable callback")
             basic_ok = True
         if args.native:
-            subprocess.run(["javac", "-cp", str(classes), "-d", str(client), str(REPO / "tools/LocalSmokeClient.java")], check=True, capture_output=True)
-            result = subprocess.run(["java", "-XX:+DisableAttachMechanism", "-XX:-EnableDynamicAgentLoading", "-cp", classpath,
-                "LocalSmokeClient", str(client / "data"), f"localhost:{auth_port}"], env=env, capture_output=True, timeout=65)
+            subprocess.run(["javac", "-cp", str(classes), "-d", str(client), str(REPO / "tools/LocalSmokeClient.java"),
+                            str(REPO / "native/tests/NativeLoadSmoke.java")], check=True, capture_output=True)
+            jvm = ["java", "-XX:+DisableAttachMechanism", "-XX:-EnableDynamicAgentLoading", "-cp", classpath]
+            probe = jvm + ["LocalSmokeClient", str(client / "data"), f"localhost:{auth_port}"]
+            result = subprocess.run(probe + ["accept"], env=env, capture_output=True, timeout=75)
             write(root / "native-probe.log", result.stdout + result.stderr)
             with closing(sqlite3.connect(deploy / "web_magiclicense.db")) as database:
                 last = database.execute("SELECT result FROM auth_log ORDER BY id DESC LIMIT 1").fetchone()
             native_ok = result.returncode == 0 and all(marker in result.stdout for marker in (
-                b"native_accept=true", b"entry_started=true", b"heartbeat_window_completed=true")) and last == ("OK",)
-            print("PASS native authentication, entry, ACK and heartbeat" if native_ok else
-                  "UNVERIFIED native end-to-end: existing library failed (see private native-probe.log)", flush=True)
+                b"native_accept=true", b"entry_started=true", b"heartbeat_window_completed=true",
+                b"protected_dispatch_after_rotation=true")) and last == ("OK",)
+            if not native_ok:
+                raise RuntimeError("native end-to-end failed; inspect private native-probe.log")
+            passed("Strict native TLS authentication, transformed entry, ACK, verified heartbeats and repeat-auth rejection")
+            def native_rejected(label, expected):
+                run = subprocess.run(probe + ["reject:" + expected], env=env, capture_output=True, timeout=45)
+                write(root / ("native-reject-" + label + ".log"), run.stdout + run.stderr)
+                if run.returncode or b"rejection_confirmed=true" not in run.stdout:
+                    raise RuntimeError("native rejection check failed: " + label)
+            api.call(f"/api/licenses/{code}/ban", "PUT")
+            native_rejected("ban", "BLACKLIST")
+            api.call(f"/api/licenses/{code}/unban", "PUT")
+            ordinary.call(f"/api/licenses/{code}", "PUT", {
+                "expirationDate": (dt.datetime.now() - dt.timedelta(days=1)).strftime("%Y-%m-%d-%H:%M")})
+            native_rejected("expiry", "BLACKLIST")
+            ordinary.call(f"/api/licenses/{code}", "PUT", {"expirationDate": "", "maxDailyAuth": 1})
+            native_rejected("daily-quota", "DAILY_AUTH_LIMIT")
+            ordinary.call(f"/api/licenses/{code}", "PUT", {"maxDailyAuth": 100})
+            wrong_ca = root / "wrong-ca"
+            private_directory(wrong_ca)
+            tls_material(wrong_ca)
+            env["SKYLICENSE_NATIVE_CA_CERT_FILE"] = str(wrong_ca / "auth-chain.pem")
+            native_rejected("untrusted-tls", "SOCKET_ERROR_CONNECT")
+            env["SKYLICENSE_NATIVE_CA_CERT_FILE"] = str(root / "certs/auth-chain.pem")
+            passed("native rejects banned/expired/quota-exceeded licenses and an untrusted TLS server")
+            rejected_dir = root / "rejected-artifacts"
+            private_directory(rejected_dir)
+            for label in ("unsigned", "tampered-manifest"):
+                candidate = rejected_dir / (label + (".dll" if os.name == "nt" else ".so"))
+                shutil.copy2(native_resources / native_name, candidate)
+                if label == "tampered-manifest":
+                    corrupt = bytearray((native_resources / (native_name + ".integrity")).read_bytes())
+                    corrupt[-1] ^= 1
+                    write(Path(str(candidate) + ".integrity"), bytes(corrupt))
+                run = subprocess.run(jvm + ["NativeLoadSmoke", str(candidate)], env=env, capture_output=True, timeout=30)
+                write(root / ("native-reject-" + label + ".log"), run.stdout + run.stderr)
+                if run.returncode == 0:
+                    raise RuntimeError("invalid native artifact was loaded: " + label)
+            passed("real JVM refuses native libraries with missing or tampered integrity manifests")
+            revoke_log = (root / "native-revocation.log").open("wb")
+            running = subprocess.Popen(probe + ["revoke"], env=env, stdout=revoke_log, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 40
+                while time.monotonic() < deadline:
+                    if b"ready_for_revocation=true" in (root / "native-revocation.log").read_bytes():
+                        break
+                    if running.poll() is not None:
+                        raise RuntimeError("native revocation probe exited before authentication")
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError("native revocation probe authentication timeout")
+                api.call(f"/api/licenses/{code}/ban", "PUT")
+                running.wait(timeout=65)
+                if running.returncode:
+                    raise RuntimeError("native revocation did not disable the host")
+            finally:
+                if running.poll() is None:
+                    running.kill()
+                    running.wait()
+                revoke_log.close()
+            output = (root / "native-revocation.log").read_bytes()
+            assert b"revocation_confirmed=true" in output and b"revoked_dispatch_blocked=true" in output
+            api.call(f"/api/licenses/{code}/unban", "PUT")
+            passed("native live revocation disables the Java host and blocks protected method dispatch")
+            launcher_log = (root / "native-launcher.log").open("wb")
+            launcher = subprocess.Popen(jvm + ["cn.sky.license.NativeLauncher", f"localhost:{auth_port}",
+                                        "LocalSmoke", "1.0.0", str(client / "launcher-data")],
+                                        env=env, stdout=launcher_log, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 40
+                while time.monotonic() < deadline:
+                    if b"signed native heartbeat active." in (root / "native-launcher.log").read_bytes():
+                        break
+                    if launcher.poll() is not None:
+                        raise RuntimeError("standalone native launcher failed before readiness")
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError("standalone native launcher readiness timeout")
+                api.call(f"/api/licenses/{code}/ban", "PUT")
+                launcher.wait(timeout=65)
+                if launcher.returncode != 3:
+                    raise RuntimeError("standalone native launcher did not exit with revocation status")
+            finally:
+                if launcher.poll() is None:
+                    launcher.kill()
+                    launcher.wait()
+                launcher_log.close()
+            api.call(f"/api/licenses/{code}/unban", "PUT")
+            passed("actual NativeLauncher application exits after online license revocation")
         assert api.call("/api/admin/operations/integrity")["verified"]
         passed("operation audit chain integrity")
         env.pop("SKYLICENSE_BOOTSTRAP_ADMIN_PASSWORD_FILE")

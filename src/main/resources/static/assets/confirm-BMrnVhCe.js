@@ -1,0 +1,1 @@
+import"./rolldown-runtime-XKyaHtl9.js";import{t as e}from"./message-box-BWe40JB7.js";async function t(t,n=`操作确认`){try{return await e.confirm(t,n,{type:`warning`,confirmButtonText:`确认`,cancelButtonText:`取消`}),!0}catch{return!1}}export{t};

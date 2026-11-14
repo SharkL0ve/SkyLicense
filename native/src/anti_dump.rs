@@ -1,65 +1,65 @@
-/// Anti-dump and memory access monitoring
-/// Detects attempts to read process memory from external tools
+//! Low-overhead anti-dump signals.
+//!
+//! Honeypot pages are intentionally treated as heuristic evidence. External
+//! process-memory APIs do not guarantee delivery of an exception to the target,
+//! so page guards must never be the sole authorization boundary.
 
 #[cfg(target_os = "windows")]
-use winapi::um::memoryapi::{VirtualAlloc, VirtualProtect, VirtualQuery};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
 #[cfg(target_os = "windows")]
-use winapi::um::winnt::{
-    MEM_COMMIT, MEM_RESERVE, MEMORY_BASIC_INFORMATION,
-    PAGE_EXECUTE_READ, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE,
-};
+use std::sync::OnceLock;
+#[cfg(target_os = "windows")]
+use winapi::um::memoryapi::{VirtualAlloc, VirtualFree, VirtualProtect};
+#[cfg(target_os = "windows")]
+use winapi::um::winnt::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_GUARD, PAGE_READWRITE};
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-/// Counter for detected memory access violations
+#[cfg(target_os = "windows")]
 static VIOLATION_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Addresses of honeypot pages for re-arming PAGE_GUARD after trigger
 #[cfg(target_os = "windows")]
-static HONEYPOT_PAGES: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
+static HONEYPOT_PAGES: OnceLock<Vec<usize>> = OnceLock::new();
+#[cfg(target_os = "windows")]
+static VEH_HANDLE: OnceLock<usize> = OnceLock::new();
 
-/// Honeypot pages - allocated memory that looks like it contains the method map
-/// but is actually a trap. Any access triggers detection.
 pub struct MemoryHoneypot {
     #[cfg(target_os = "windows")]
-    pub(crate) trap_pages: Vec<*mut std::ffi::c_void>,
+    trap_pages: Vec<*mut std::ffi::c_void>,
     #[cfg(target_os = "linux")]
-    pub(crate) trap_pages: Vec<(*mut std::ffi::c_void, usize)>,
+    trap_pages: Vec<(*mut std::ffi::c_void, usize)>,
 }
 
 impl MemoryHoneypot {
-    /// Create honeypot pages that look like they contain valuable data
     pub fn new(count: usize) -> Self {
         let mut trap_pages = Vec::new();
 
         #[cfg(target_os = "windows")]
         unsafe {
             for _ in 0..count {
-                // Allocate a page
                 let page = VirtualAlloc(
                     std::ptr::null_mut(),
                     4096,
                     MEM_COMMIT | MEM_RESERVE,
                     PAGE_READWRITE,
                 );
-
-                if !page.is_null() {
-                    // Fill with fake data that looks like method info
-                    let fake_data = generate_fake_method_data();
-                    std::ptr::copy_nonoverlapping(
-                        fake_data.as_ptr(),
-                        page as *mut u8,
-                        fake_data.len().min(4096),
-                    );
-
-                    // Set PAGE_GUARD - any access will trigger an exception
-                    let mut old_protect = 0u32;
-                    VirtualProtect(page, 4096, PAGE_GUARD | PAGE_READWRITE, &mut old_protect);
-
-                    trap_pages.push(page);
+                if page.is_null() {
+                    continue;
                 }
+
+                let fake_data = generate_fake_method_data();
+                std::ptr::copy_nonoverlapping(
+                    fake_data.as_ptr(),
+                    page.cast::<u8>(),
+                    fake_data.len().min(4096),
+                );
+                let mut old_protect = 0;
+                if VirtualProtect(page, 4096, PAGE_GUARD | PAGE_READWRITE, &mut old_protect) == 0 {
+                    VirtualFree(page, 0, MEM_RELEASE);
+                    continue;
+                }
+                trap_pages.push(page);
             }
         }
 
@@ -74,20 +74,21 @@ impl MemoryHoneypot {
                     -1,
                     0,
                 );
-
-                if page != libc::MAP_FAILED {
-                    let fake_data = generate_fake_method_data();
-                    std::ptr::copy_nonoverlapping(
-                        fake_data.as_ptr(),
-                        page as *mut u8,
-                        fake_data.len().min(4096),
-                    );
-
-                    // Make inaccessible - any read attempt from dumper will fail
-                    libc::mprotect(page, 4096, libc::PROT_NONE);
-
-                    trap_pages.push((page, 4096));
+                if page == libc::MAP_FAILED {
+                    continue;
                 }
+
+                let fake_data = generate_fake_method_data();
+                std::ptr::copy_nonoverlapping(
+                    fake_data.as_ptr(),
+                    page.cast::<u8>(),
+                    fake_data.len().min(4096),
+                );
+                if libc::mprotect(page, 4096, libc::PROT_NONE) != 0 {
+                    libc::munmap(page, 4096);
+                    continue;
+                }
+                trap_pages.push((page, 4096));
             }
         }
 
@@ -95,227 +96,297 @@ impl MemoryHoneypot {
     }
 }
 
-/// Generate fake data that looks like a method map entry to confuse memory scanners
+impl Drop for MemoryHoneypot {
+    fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            for page in self.trap_pages.drain(..) {
+                VirtualFree(page, 0, MEM_RELEASE);
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        unsafe {
+            for (page, size) in self.trap_pages.drain(..) {
+                libc::munmap(page, size);
+            }
+        }
+    }
+}
+
 fn generate_fake_method_data() -> Vec<u8> {
-    let fake_classes = [
-        "java/lang/Object", "java/lang/String", "java/util/HashMap",
-        "net/minecraft/server/MinecraftServer", "org/bukkit/plugin/Plugin",
-        "cn/sky/license/AuthManager", "io/netty/channel/Channel",
+    const CLASSES: &[&str] = &[
+        "java/lang/Object",
+        "java/lang/String",
+        "java/util/HashMap",
+        "net/minecraft/server/MinecraftServer",
+        "org/bukkit/plugin/Plugin",
+        "cn/sky/license/AuthManager",
+        "io/netty/channel/Channel",
     ];
-    let fake_methods = [
-        "getInstance", "toString", "hashCode", "equals", "notify",
-        "getClass", "clone", "finalize", "wait", "run",
+    const METHODS: &[&str] = &[
+        "getInstance",
+        "toString",
+        "hashCode",
+        "equals",
+        "notify",
+        "getClass",
+        "clone",
+        "finalize",
+        "wait",
+        "run",
     ];
-    let fake_descs = [
-        "()V", "()Ljava/lang/String;", "(I)V", "(Ljava/lang/Object;)Z",
-        "()I", "(II)I", "([B)V", "(Ljava/lang/String;)V",
+    const DESCRIPTORS: &[&str] = &[
+        "()V",
+        "()Ljava/lang/String;",
+        "(I)V",
+        "(Ljava/lang/Object;)Z",
+        "()I",
+        "(II)I",
+        "([B)V",
+        "(Ljava/lang/String;)V",
     ];
 
     let mut data = Vec::with_capacity(4096);
-
     for _ in 0..20 {
-        let class_idx = (rand::random::<usize>()) % fake_classes.len();
-        let method_idx = (rand::random::<usize>()) % fake_methods.len();
-        let desc_idx = (rand::random::<usize>()) % fake_descs.len();
-        let class = fake_classes[class_idx];
-        let method = fake_methods[method_idx];
-        let desc = fake_descs[desc_idx];
-
+        let class = CLASSES[rand::random::<usize>() % CLASSES.len()];
+        let method = METHODS[rand::random::<usize>() % METHODS.len()];
+        let descriptor = DESCRIPTORS[rand::random::<usize>() % DESCRIPTORS.len()];
         data.extend_from_slice(class.as_bytes());
         data.push(0);
         data.extend_from_slice(method.as_bytes());
         data.push(0);
-        data.extend_from_slice(desc.as_bytes());
+        data.extend_from_slice(descriptor.as_bytes());
         data.push(0);
-        // Add some random padding
-        let pad_count = (rand::random::<usize>() % 24) + 8;
-        for _ in 0..pad_count {
-            data.push(rand::random::<u8>());
+        for _ in 0..((rand::random::<usize>() % 24) + 8) {
+            data.push(rand::random());
         }
     }
-
     data
 }
 
-/// Monitor for ReadProcessMemory calls targeting our process
-/// Works by periodically checking if our guard pages have been accessed
 #[cfg(target_os = "windows")]
-pub fn start_memory_monitor() {
-    std::thread::spawn(|| {
-        // Create honeypot pages
-        let honeypot = MemoryHoneypot::new(8);
-
-        // Store page addresses for re-arming in VEH handler
-        let page_addrs: Vec<usize> = honeypot.trap_pages.iter().map(|p| *p as usize).collect();
-        let _ = HONEYPOT_PAGES.set(Mutex::new(page_addrs));
-
-        // Install vectored exception handler for PAGE_GUARD violations
-        unsafe {
-            use winapi::um::errhandlingapi::AddVectoredExceptionHandler;
-            AddVectoredExceptionHandler(1, Some(guard_page_handler));
-        }
-
-        // Periodically check for memory scanning indicators
-        loop {
-            std::thread::sleep(Duration::from_millis(500));
-
-            // Use decaying violation tracker
-            if crate::mem_protect::add_violation(0) {
-                // Threshold exceeded — exit
-                crate::debug_log!("[SkyLicense] !!! Memory violation threshold exceeded — exiting !!!");
-                unsafe { crate::corrupt_state(); }
-                let delay = (rand::random::<u64>() % 3000) + 500;
-                std::thread::sleep(Duration::from_millis(delay));
-                std::process::exit(0);
+pub fn start_memory_monitor() -> Result<(), String> {
+    crate::security::spawn_ready_monitor(
+        "sky-memory-monitor",
+        Duration::from_secs(5),
+        |stop, ready| {
+            let honeypot = MemoryHoneypot::new(8);
+            if honeypot.trap_pages.is_empty() {
+                let _ = ready.send(Err(
+                    "no Windows guard-page honeypots were allocated".to_string()
+                ));
+                return;
+            }
+            let pages = honeypot
+                .trap_pages
+                .iter()
+                .map(|page| *page as usize)
+                .collect();
+            if HONEYPOT_PAGES.set(pages).is_err() {
+                let _ = ready.send(Err("honeypot pages were already initialized".to_string()));
+                return;
             }
 
-            // Check for common memory dumping tools
-            //check_for_dump_tools();
-
-            // Periodic hardware breakpoint check
-            if crate::mem_protect::detect_hardware_breakpoints() {
-                crate::debug_log!("[SkyLicense] !!! Hardware breakpoint detected — exiting !!!");
-                unsafe { crate::corrupt_state(); }
-                let delay = (rand::random::<u64>() % 2000) + 500;
-                std::thread::sleep(Duration::from_millis(delay));
-                std::process::exit(0);
+            let handler = unsafe {
+                winapi::um::errhandlingapi::AddVectoredExceptionHandler(1, Some(guard_page_handler))
+            };
+            if handler.is_null() {
+                let _ = ready.send(Err("AddVectoredExceptionHandler failed".to_string()));
+                return;
+            }
+            if VEH_HANDLE.set(handler as usize).is_err() {
+                unsafe {
+                    winapi::um::errhandlingapi::RemoveVectoredExceptionHandler(handler);
+                }
+                let _ = ready.send(Err(
+                    "vectored exception handler was already initialized".to_string()
+                ));
+                return;
+            }
+            if ready.send(Ok(())).is_err() {
+                unsafe {
+                    winapi::um::errhandlingapi::RemoveVectoredExceptionHandler(handler);
+                }
+                return;
             }
 
-            // Periodic handle monitoring (every 5s = 10 ticks)
-            static TICK: AtomicU64 = AtomicU64::new(0);
-            let tick = TICK.fetch_add(1, Ordering::Relaxed);
-            if tick % 10 == 0 {
-                if crate::mem_protect::detect_external_memory_handles() {
-                    let _ = crate::mem_protect::add_violation(2);
+            while !stop.load(Ordering::Acquire) {
+                if crate::security::wait_for_stop(&stop, Duration::from_millis(500)) {
+                    break;
+                }
+                rearm_honeypots();
+
+                let violations = VIOLATION_COUNT.swap(0, Ordering::AcqRel);
+                if violations >= 3 {
+                    crate::security::submit(crate::security::SecurityEvidence::new(
+                        crate::security::EvidenceKind::MemoryAccess,
+                        crate::security::EvidenceConfidence::High,
+                        "memory.guard",
+                        format!("{violations} guarded honeypot accesses"),
+                    ));
+                    break;
+                }
+
+                // This detector currently checks only the monitor thread. Treat it
+                // as a risk signal until all relevant JVM threads are inspected.
+                if crate::mem_protect::detect_hardware_breakpoints() {
+                    crate::security::submit(crate::security::SecurityEvidence::new(
+                        crate::security::EvidenceKind::Debugger,
+                        crate::security::EvidenceConfidence::Medium,
+                        "memory.debug_registers",
+                        "hardware debug register detected on monitor thread",
+                    ));
                 }
             }
-        }
-    });
+
+            if let Some(handle) = VEH_HANDLE.get() {
+                unsafe {
+                    winapi::um::errhandlingapi::RemoveVectoredExceptionHandler(*handle as *mut _);
+                }
+            }
+            drop(honeypot);
+        },
+    )
 }
 
 #[cfg(target_os = "linux")]
-pub fn start_memory_monitor() {
-    std::thread::spawn(|| {
-        let _honeypot = MemoryHoneypot::new(8);
+pub fn start_memory_monitor() -> Result<(), String> {
+    crate::security::spawn_ready_monitor(
+        "sky-memory-monitor",
+        Duration::from_secs(5),
+        |stop, ready| {
+            let honeypot = MemoryHoneypot::new(8);
+            if honeypot.trap_pages.is_empty() {
+                let _ = ready.send(Err(
+                    "no Linux PROT_NONE honeypot mappings were allocated".to_string()
+                ));
+                return;
+            }
+            let Some(initial_tracer_pid) = linux_tracer_pid() else {
+                let _ = ready.send(Err("unable to read /proc/self/status".to_string()));
+                return;
+            };
+            if initial_tracer_pid != 0 {
+                crate::security::submit(crate::security::SecurityEvidence::new(
+                    crate::security::EvidenceKind::Debugger,
+                    crate::security::EvidenceConfidence::High,
+                    "linux.tracer_pid",
+                    format!("TracerPid is {initial_tracer_pid}"),
+                ));
+                if crate::security::state().is_terminal() {
+                    let _ = ready.send(Err("a Linux tracer is already attached".to_string()));
+                    return;
+                }
+            }
+            if ready.send(Ok(())).is_err() {
+                return;
+            }
 
-        loop {
-            std::thread::sleep(Duration::from_secs(2));
-
-            // Check /proc/self/status for memory access from other processes
-            if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-                for line in status.lines() {
-                    if line.starts_with("TracerPid:") {
-                        let pid = line.split_whitespace().nth(1).unwrap_or("0");
-                        if pid != "0" {
-                            crate::debug_log!("[SkyLicense] !!! TracerPid detected: {} — exiting !!!", pid);
-                            unsafe { crate::corrupt_state(); }
-                            std::thread::sleep(Duration::from_millis(
-                                (rand::random::<u64>() % 2000) + 500
-                            ));
-                            std::process::exit(0);
+            while !stop.load(Ordering::Acquire) {
+                if crate::security::wait_for_stop(&stop, Duration::from_secs(2)) {
+                    break;
+                }
+                match linux_tracer_pid() {
+                    Some(tracer_pid) if tracer_pid != 0 => {
+                        crate::security::submit(crate::security::SecurityEvidence::new(
+                            crate::security::EvidenceKind::Debugger,
+                            crate::security::EvidenceConfidence::High,
+                            "linux.tracer_pid",
+                            format!("TracerPid is {tracer_pid}"),
+                        ));
+                        break;
+                    }
+                    Some(_) => {}
+                    None => {
+                        let evidence = crate::security::SecurityEvidence::new(
+                            crate::security::EvidenceKind::RuntimeFailure,
+                            crate::security::EvidenceConfidence::High,
+                            "linux.tracer_monitor",
+                            "lost access to /proc/self/status while the session was active",
+                        );
+                        if crate::security::policy().profile
+                            == crate::security::SecurityProfile::Compatible
+                        {
+                            crate::security::report(evidence);
+                        } else {
+                            crate::security::fail_closed(evidence);
                         }
+                        break;
                     }
                 }
             }
-
-            // Check /proc/self/mem access time (unreliable with noatime, but free)
-            if let Ok(metadata) = std::fs::metadata("/proc/self/mem") {
-                if let Ok(accessed) = metadata.accessed() {
-                    let now = SystemTime::now();
-                    if let Ok(diff) = now.duration_since(accessed) {
-                        if diff < Duration::from_secs(5) {
-                            if crate::mem_protect::add_violation(1) {
-                                unsafe { crate::corrupt_state(); }
-                                std::thread::sleep(Duration::from_millis(
-                                    (rand::random::<u64>() % 2000) + 500
-                                ));
-                                std::process::exit(0);
-                            }
-                        }
-                    }
-                }
-            }
-
-            //check_for_dump_tools();
-        }
-    });
+        },
+    )
 }
 
-/// Vectored exception handler for Windows PAGE_GUARD violations
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+pub fn start_memory_monitor() -> Result<(), String> {
+    Err("memory monitoring is unsupported on this operating system".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_tracer_pid() -> Option<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status.lines().find_map(|line| {
+        line.strip_prefix("TracerPid:")
+            .and_then(|value| value.trim().parse().ok())
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn rearm_honeypots() {
+    if let Some(pages) = HONEYPOT_PAGES.get() {
+        for &page in pages {
+            let mut old_protect = 0;
+            unsafe {
+                VirtualProtect(
+                    page as *mut _,
+                    4096,
+                    PAGE_GUARD | PAGE_READWRITE,
+                    &mut old_protect,
+                );
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn guard_page_handler(
     exception_info: *mut winapi::um::winnt::EXCEPTION_POINTERS,
 ) -> i32 {
     const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
     const EXCEPTION_CONTINUE_EXECUTION: i32 = -1;
-    const STATUS_GUARD_PAGE_VIOLATION: u32 = 0x80000001;
+    const STATUS_GUARD_PAGE_VIOLATION: u32 = 0x8000_0001;
 
     if exception_info.is_null() {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-
-    unsafe {
-        let record = (*exception_info).ExceptionRecord;
-        if record.is_null() {
-            return EXCEPTION_CONTINUE_SEARCH;
-        }
-
-        if (*record).ExceptionCode == STATUS_GUARD_PAGE_VIOLATION {
-            // Someone accessed our guard page — likely a memory scanner
-            // Use the decaying violation tracker
-            if crate::mem_protect::add_violation(1) {
-                // Threshold exceeded — take action
-                crate::corrupt_state();
-            }
-
-            // Re-arm PAGE_GUARD on all honeypot pages (PAGE_GUARD is one-shot)
-            if let Some(pages) = HONEYPOT_PAGES.get() {
-                if let Ok(page_list) = pages.lock() {
-                    for &page_addr in page_list.iter() {
-                        let mut old_protect = 0u32;
-                        VirtualProtect(
-                            page_addr as *mut _,
-                            4096,
-                            PAGE_GUARD | PAGE_READWRITE,
-                            &mut old_protect,
-                        );
-                    }
-                }
-            }
-
-            return EXCEPTION_CONTINUE_EXECUTION;
-        }
+    let record = unsafe { (*exception_info).ExceptionRecord };
+    if record.is_null() {
+        return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    EXCEPTION_CONTINUE_SEARCH
-}
-
-/// Check for common memory dumping tools
-fn check_for_dump_tools() {
-    use sysinfo::{ProcessExt, System, SystemExt, ProcessRefreshKind, RefreshKind};
-
-    // Lightweight refresh — only processes, not CPU/memory/disks
-    let mut system = System::new_with_specifics(
-        RefreshKind::new().with_processes(ProcessRefreshKind::new())
-    );
-    system.refresh_processes();
-
-    let dump_tools = [
-        "processhacker", "procexp", "dumper", "memdump",
-        "procdump", "minidump", "ce-", "cheatengine",
-        "scanmem", "gameconqueror", "pmemdump",
-        "dnspy", "binaryninja", "ghidra", "ghidrarun",
-        "x64dbg", "jvisualvm", "visualvm", "jconsole",
-        "pin", "drrun", "dynamorio",
-    ];
-
-    for process in system.processes().values() {
-        let name = process.name().to_lowercase();
-        for tool in &dump_tools {
-            if name.contains(tool) {
-                let _ = crate::mem_protect::add_violation(2);
-                return;
-            }
-        }
+    let is_guard = unsafe { (*record).ExceptionCode == STATUS_GUARD_PAGE_VIOLATION };
+    let has_address = unsafe { (*record).NumberParameters >= 2 };
+    if !is_guard || !has_address {
+        return EXCEPTION_CONTINUE_SEARCH;
     }
+
+    let accessed = unsafe { (*record).ExceptionInformation[1] };
+    let belongs_to_honeypot = HONEYPOT_PAGES
+        .get()
+        .map(|pages| {
+            pages
+                .iter()
+                .any(|page| accessed >= *page && accessed < page.saturating_add(4096))
+        })
+        .unwrap_or(false);
+    if !belongs_to_honeypot {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    VIOLATION_COUNT.fetch_add(1, Ordering::Relaxed);
+    // Guard is re-armed by the monitor after this instruction completes.
+    EXCEPTION_CONTINUE_EXECUTION
 }

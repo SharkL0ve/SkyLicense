@@ -25,7 +25,7 @@ import java.util.EnumSet;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
-public class SkyLicense extends ClassLoader {
+public class SkyLicense extends ClassLoader implements AutoCloseable {
     private static final byte[] START = new byte[]{-54, -2, -70, -66, 0, 0, 0, 52, 0, 28, 10, 0, 4, 0, 21, 10, 0, 22, 0, 23, 7, 0, 24, 7, 0, 25, 7, 0, 26, 1, 0, 6, 60, 105, 110, 105, 116, 62, 1, 0, 3, 40, 41, 86, 1, 0, 4, 67, 111, 100, 101, 1, 0, 15, 76, 105, 110, 101, 78, 117, 109, 98, 101, 114, 84, 97, 98, 108, 101, 1, 0, 18, 76, 111, 99, 97, 108, 86, 97, 114, 105, 97, 98, 108, 101, 84, 97, 98, 108, 101, 1, 0, 4, 116, 104, 105, 115, 1, 0, 32, 76, 99, 110, 47, 115, 107, 121, 47, 108, 105, 99, 101, 110, 115, 101, 47, 97, 117, 116, 104, 108, 105, 98, 47, 65, 117, 116, 104, 76, 105, 98, 59, 1, 0, 4, 108, 111, 97, 100, 1, 0, 21, 40, 76, 106, 97, 118, 97, 47, 108, 97, 110, 103, 47, 83, 116, 114, 105, 110, 103, 59, 41, 86, 1, 0, 4, 110, 97, 109, 101, 1, 0, 18, 76, 106, 97, 118, 97, 47, 108, 97, 110, 103, 47, 83, 116, 114, 105, 110, 103, 59, 1, 0, 12, 97, 117, 116, 104, 101, 110, 116, 105, 99, 97, 116, 101, 1, 0, 56, 40, 76, 106, 97, 118, 97, 47, 108, 97, 110, 103, 47, 79, 98, 106, 101, 99, 116, 59, 76, 106, 97, 118, 97, 47, 108, 97, 110, 103, 47, 83, 116, 114, 105, 110, 103, 59, 41, 76, 106, 97, 118, 97, 47, 108, 97, 110, 103, 47, 79, 98, 106, 101, 99, 116, 59, 1, 0, 10, 83, 111, 117, 114, 99, 101, 70, 105, 108, 101, 1, 0, 12, 65, 117, 116, 104, 76, 105, 98, 46, 106, 97, 118, 97, 12, 0, 6, 0, 7, 7, 0, 27, 12, 0, 13, 0, 14, 1, 0, 30, 99, 110, 47, 115, 107, 121, 47, 108, 105, 99, 101, 110, 115, 101, 47, 97, 117, 116, 104, 108, 105, 98, 47, 65, 117, 116, 104, 76, 105, 98, 1, 0, 16, 106, 97, 118, 97, 47, 108, 97, 110, 103, 47, 79, 98, 106, 101, 99, 116, 1};
 
     private static final byte[] END = new byte[]{1, 0, 16, 106, 97, 118, 97, 47, 108, 97, 110, 103, 47, 83, 121, 115, 116, 101, 109, 0, 33, 0, 3, 0, 4, 0, 1, 0, 5, 0, 0, 0, 3, 0, 1, 0, 6, 0, 7, 0, 1, 0, 8, 0, 0, 0, 47, 0, 1, 0, 1, 0, 0, 0, 5, 42, -73, 0, 1, -79, 0, 0, 0, 2, 0, 9, 0, 0, 0, 6, 0, 1, 0, 0, 0, 3, 0, 10, 0, 0, 0, 12, 0, 1, 0, 0, 0, 5, 0, 11, 0, 12, 0, 0, 0, 1, 0, 13, 0, 14, 0, 1, 0, 8, 0, 0, 0, 61, 0, 1, 0, 2, 0, 0, 0, 5, 43, -72, 0, 2, -79, 0, 0, 0, 2, 0, 9, 0, 0, 0, 10, 0, 2, 0, 0, 0, 6, 0, 4, 0, 7, 0, 10, 0, 0, 0, 22, 0, 2, 0, 0, 0, 5, 0, 11, 0, 12, 0, 0, 0, 0, 0, 5, 0, 15, 0, 16, 0, 1, 1, 1, 0, 17, 0, 18, 0, 0, 0, 1, 0, 19, 0, 0, 0, 2, 0, 20};
@@ -41,10 +41,62 @@ public class SkyLicense extends ClassLoader {
     // Protected classes are rewritten to read this field through GETSTATIC.
     public static volatile IAuthLib authLib;
     private final PluginProxy pluginProxy;
+    private static final java.util.concurrent.atomic.AtomicBoolean BRIDGE_CLAIMED =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicBoolean notified = new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile boolean accepted;
+    private java.util.concurrent.ScheduledExecutorService leaseMonitor;
+
+    public boolean isSessionActive() {
+        return accepted && !closed.get() && nativeStatus().startsWith("ACTIVE:");
+    }
+
+    public long getHeartbeatCount() {
+        String status = nativeStatus();
+        int separator = status.indexOf(':');
+        if (separator < 0) return 0;
+        try { return Long.parseLong(status.substring(separator + 1)); }
+        catch (NumberFormatException ignored) { return 0; }
+    }
+
+    private String nativeStatus() {
+        return String.valueOf(authLib.authenticate(null, "!skylicense:v4:status"));
+    }
+
+    private void startLeaseMonitor() {
+        leaseMonitor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "skylicense-native-lease");
+            thread.setDaemon(true);
+            return thread;
+        });
+        leaseMonitor.scheduleWithFixedDelay(() -> {
+            if (closed.get()) return;
+            try { if (isSessionActive()) return; }
+            catch (RuntimeException | LinkageError ignored) { /* Fail closed if the bridge is unavailable. */ }
+            if (notified.compareAndSet(false, true)) {
+                accepted = false;
+                try { pluginProxy.disablePlugin(); }
+                catch (RuntimeException ignored) { /* Native keys remain revoked. */ }
+            }
+        }, 1, 1, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    @Override
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            accepted = false;
+            if (leaseMonitor != null) leaseMonitor.shutdownNow();
+            authLib.authenticate(null, "!skylicense:v4:close");
+        }
+    }
 
     @SuppressWarnings("this-escape") // defineClass uses this ClassLoader but does not publish it.
     public SkyLicense(PluginProxy pluginProxy) {
         super(pluginProxy.getClass().getClassLoader());
+        if (!BRIDGE_CLAIMED.compareAndSet(false, true)) {
+            throw new IllegalStateException("Only one native license bridge may be initialized per JVM; restart this process");
+        }
         this.pluginProxy = pluginProxy;
         String osName = System.getProperty("os.name").toLowerCase();
         String arch = System.getProperty("os.arch").toLowerCase();
@@ -399,7 +451,12 @@ public class SkyLicense extends ClassLoader {
                     "authentication endpoint and plugin identity are invalid");
         }
         Object result = authLib.authenticate(this, authHost + '@' + port + '@' + pluginName + '@' + version + '@' + token + "$$" + SkyLicense.class.getName().replace(".", "/") + "$$" + IAuthLib.class.getName().replace(".", "/"));
-        return Response.translate((String) result);
+        Response response = Response.translate((String) result);
+        if (response == Response.ACCEPT && !accepted) {
+            accepted = true;
+            startLeaseMonitor();
+        }
+        return response;
     }
 
     public interface IAuthLib {

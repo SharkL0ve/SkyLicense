@@ -133,9 +133,15 @@ public class BytecodeMutator {
      * Add dummy fields with random names
      */
     private static void addDummyFields(ClassNode cn) {
-        int fieldCount = RANDOM.nextInt(3) + 1;
+        // Interface/annotation fields must be public static final, and module
+        // descriptors cannot contain ordinary fields. Do not alter their ABI.
+        if ((cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_MODULE)) != 0) return;
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (FieldNode field : cn.fields) names.add(field.name);
+        int fieldCount = Math.min(RANDOM.nextInt(3) + 1, 65535 - cn.fields.size());
         for (int i = 0; i < fieldCount; i++) {
-            String name = generateRandomFieldName();
+            String name;
+            do { name = generateRandomFieldName(); } while (!names.add(name));
             String desc = RANDOM.nextBoolean() ? "I" : "J";
             int access = Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC;
             cn.fields.add(new FieldNode(access, name, desc, null, null));

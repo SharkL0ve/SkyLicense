@@ -1,0 +1,374 @@
+name: release-native
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: New GitHub release tag, for example native-v1.2.0
+        required: true
+        type: string
+      build_id:
+        description: Fresh non-zero 64-character hexadecimal Build ID
+        required: true
+        type: string
+      security_epoch:
+        description: Security epoch for this native release
+        required: true
+        type: string
+      minimum_security_epoch:
+        description: Minimum accepted native security epoch
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    environment: native-production
+    env:
+      SKYLICENSE_MANIFEST_PUBLIC_KEY: ${{ vars.SKYLICENSE_MANIFEST_PUBLIC_KEY }}
+      SKYLICENSE_MANIFEST_PRIVATE_KEY: ${{ secrets.SKYLICENSE_MANIFEST_PRIVATE_KEY }}
+      SKYLICENSE_MIN_SECURITY_EPOCH: ${{ inputs.minimum_security_epoch }}
+      SKYLICENSE_SECURITY_EPOCH: ${{ inputs.security_epoch }}
+      SKYLICENSE_BUILD_ID: ${{ inputs.build_id }}
+      SKYLICENSE_CERT_SHA256: ${{ vars.SKYLICENSE_CERT_SHA256 }}
+      SKYLICENSE_ARTIFACT_CHANNEL: production
+      WINDOWS_CODESIGN_CERT_SHA256: ${{ vars.WINDOWS_CODESIGN_CERT_SHA256 }}
+      WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
+      WINDOWS_CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
+      WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ vars.WINDOWS_CODESIGN_TIMESTAMP_URL }}
+      RUSTFLAGS: "-C control-flow-guard=checks -C link-arg=/guard:cf"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable 2026-07-23
+        with:
+          toolchain: 1.97.1-x86_64-pc-windows-msvc
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Configure optional next certificate pin
+        shell: pwsh
+        env:
+          NEXT_CERTIFICATE_PIN: ${{ vars.SKYLICENSE_CERT_SHA256_NEXT }}
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:NEXT_CERTIFICATE_PIN)) {
+            "SKYLICENSE_CERT_SHA256_NEXT=$env:NEXT_CERTIFICATE_PIN" |
+              Add-Content -Encoding utf8 $env:GITHUB_ENV
+          }
+
+      - name: Validate production release inputs
+        shell: pwsh
+        run: |
+          $hex64 = '^(?i:[0-9a-f]{64})$'
+          $requiredHex = @(
+            'SKYLICENSE_MANIFEST_PUBLIC_KEY',
+            'SKYLICENSE_MANIFEST_PRIVATE_KEY',
+            'SKYLICENSE_BUILD_ID',
+            'SKYLICENSE_CERT_SHA256',
+            'WINDOWS_CODESIGN_CERT_SHA256'
+          )
+          foreach ($name in $requiredHex) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if (-not $value -or $value -notmatch $hex64 -or $value -match '^(?i:0{64})$') {
+              throw "$name must be a non-zero 64-character hexadecimal value"
+            }
+          }
+          if ('${{ inputs.release_tag }}' -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
+            throw 'release_tag contains unsupported characters'
+          }
+          $minimum = 0
+          $current = 0
+          if (-not [int]::TryParse($env:SKYLICENSE_MIN_SECURITY_EPOCH, [ref]$minimum) -or
+              -not [int]::TryParse($env:SKYLICENSE_SECURITY_EPOCH, [ref]$current) -or
+              $minimum -le 0 -or $current -lt $minimum) {
+            throw 'security epochs must be positive and current epoch must not be below minimum'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_PFX_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_PASSWORD) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_TIMESTAMP_URL)) {
+            throw 'Windows Authenticode secrets and timestamp URL are required'
+          }
+          $hostLine = rustc -vV | Select-String '^host:'
+          if ($hostLine -notmatch 'x86_64-pc-windows-msvc') {
+            throw "production Windows builds require the MSVC Rust target: $hostLine"
+          }
+
+      - name: Build strict Windows release
+        run: cargo build --release --locked --lib --bin sign_artifact --bin verify_artifact
+
+      - name: Apply Authenticode before the application manifest
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'skylicense-codesign.pfx'
+          try {
+            [IO.File]::WriteAllBytes(
+              $pfx,
+              [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX_BASE64))
+            $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+              $pfx,
+              $env:WINDOWS_CODESIGN_PASSWORD,
+              [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+            try {
+              if (-not $certificate.HasPrivateKey) {
+                throw 'The configured Authenticode certificate has no private key'
+              }
+              $now = [DateTime]::UtcNow
+              if ($certificate.NotBefore.ToUniversalTime() -gt $now -or
+                  $certificate.NotAfter.ToUniversalTime() -le $now) {
+                throw 'The configured Authenticode certificate is not currently valid'
+              }
+              $sha256 = [Security.Cryptography.SHA256]::Create()
+              try {
+                $actualCertificateHash = ([BitConverter]::ToString(
+                  $sha256.ComputeHash($certificate.RawData))).Replace('-', '').ToLowerInvariant()
+              } finally {
+                $sha256.Dispose()
+              }
+              if ($actualCertificateHash -cne $env:WINDOWS_CODESIGN_CERT_SHA256.ToLowerInvariant()) {
+                throw 'The PFX certificate does not match WINDOWS_CODESIGN_CERT_SHA256'
+              }
+            } finally {
+              $certificate.Dispose()
+            }
+            $signTool = Get-ChildItem `
+              "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+              -Filter signtool.exe -File -Recurse |
+              Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if (-not $signTool) {
+              throw 'signtool.exe was not found on the Windows runner'
+            }
+            & $signTool.FullName sign `
+              /fd SHA256 `
+              /f $pfx `
+              /p $env:WINDOWS_CODESIGN_PASSWORD `
+              /tr $env:WINDOWS_CODESIGN_TIMESTAMP_URL `
+              /td SHA256 `
+              target/release/SkyLicense_64.dll
+            if ($LASTEXITCODE -ne 0) {
+              throw 'signtool failed'
+            }
+          } finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Sign and verify Windows artifact manifest
+        shell: pwsh
+        run: |
+          & target/release/sign_artifact.exe target/release/SkyLicense_64.dll
+          if ($LASTEXITCODE -ne 0) { throw 'application manifest signing failed' }
+          .\native\tools\verify-pe-hardening.ps1 `
+            -Path .\target\release\SkyLicense_64.dll `
+            -RequireAuthenticode `
+            -RequireIntegrityManifest `
+            -ExpectedSignerCertificateSha256 $env:WINDOWS_CODESIGN_CERT_SHA256
+
+      - name: Load signed Windows library in a JVM
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/native-load-smoke | Out-Null
+          javac -d target/native-load-smoke native/tests/NativeLoadSmoke.java
+          java -cp target/native-load-smoke NativeLoadSmoke `
+            "$env:GITHUB_WORKSPACE\target\release\SkyLicense_64.dll"
+
+      - name: Stage Windows release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/SkyLicense_64.dll dist/SkyLicense_64.dll
+          Copy-Item target/release/SkyLicense_64.dll.integrity `
+            dist/SkyLicense_64.dll.integrity
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    runs-on: ubuntu-latest
+    environment: native-production
+    env:
+      SKYLICENSE_MANIFEST_PUBLIC_KEY: ${{ vars.SKYLICENSE_MANIFEST_PUBLIC_KEY }}
+      SKYLICENSE_MANIFEST_PRIVATE_KEY: ${{ secrets.SKYLICENSE_MANIFEST_PRIVATE_KEY }}
+      SKYLICENSE_MIN_SECURITY_EPOCH: ${{ inputs.minimum_security_epoch }}
+      SKYLICENSE_SECURITY_EPOCH: ${{ inputs.security_epoch }}
+      SKYLICENSE_BUILD_ID: ${{ inputs.build_id }}
+      SKYLICENSE_CERT_SHA256: ${{ vars.SKYLICENSE_CERT_SHA256 }}
+      SKYLICENSE_ARTIFACT_CHANNEL: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable 2026-07-23
+        with:
+          toolchain: "1.97.1"
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Configure optional next certificate pin
+        shell: bash
+        env:
+          NEXT_CERTIFICATE_PIN: ${{ vars.SKYLICENSE_CERT_SHA256_NEXT }}
+        run: |
+          if [[ -n "$NEXT_CERTIFICATE_PIN" ]]; then
+            printf 'SKYLICENSE_CERT_SHA256_NEXT=%s\n' "$NEXT_CERTIFICATE_PIN" >> "$GITHUB_ENV"
+          fi
+
+      - name: Validate production release inputs
+        shell: bash
+        run: |
+          [[ '${{ inputs.release_tag }}' =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
+          for name in \
+            SKYLICENSE_MANIFEST_PUBLIC_KEY \
+            SKYLICENSE_MANIFEST_PRIVATE_KEY \
+            SKYLICENSE_BUILD_ID \
+            SKYLICENSE_CERT_SHA256; do
+            value=${!name}
+            [[ "$value" =~ ^[0-9A-Fa-f]{64}$ ]]
+            [[ ! "$value" =~ ^0{64}$ ]]
+          done
+          [[ "$SKYLICENSE_MIN_SECURITY_EPOCH" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SKYLICENSE_SECURITY_EPOCH" =~ ^[1-9][0-9]*$ ]]
+          (( SKYLICENSE_SECURITY_EPOCH >= SKYLICENSE_MIN_SECURITY_EPOCH ))
+          rustc -vV | grep -q '^host: x86_64-unknown-linux-gnu$'
+
+      - name: Build strict Linux release
+        run: cargo build --release --locked --lib --bin sign_artifact --bin verify_artifact
+
+      - name: Final strip, manifest signing, and hardening verification
+        shell: bash
+        run: |
+          strip --strip-unneeded target/release/libSkyLicense_64.so
+          target/release/sign_artifact target/release/libSkyLicense_64.so
+          bash ./native/tools/verify-elf-hardening.sh \
+            target/release/libSkyLicense_64.so \
+            --require-integrity-manifest
+
+      - name: Load signed Linux library in a JVM
+        shell: bash
+        run: |
+          mkdir -p target/native-load-smoke
+          javac -d target/native-load-smoke native/tests/NativeLoadSmoke.java
+          java -cp target/native-load-smoke NativeLoadSmoke \
+            "$PWD/target/release/libSkyLicense_64.so"
+
+      - name: Stage Linux release assets
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/libSkyLicense_64.so dist/libSkyLicense_64.so
+          cp target/release/libSkyLicense_64.so.integrity \
+            dist/libSkyLicense_64.so.integrity
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-linux
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    environment: native-production
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-*
+          path: release
+          merge-multiple: true
+
+      - name: Verify release asset set
+        shell: bash
+        run: |
+          expected=(
+            SkyLicense_64.dll
+            SkyLicense_64.dll.integrity
+            libSkyLicense_64.so
+            libSkyLicense_64.so.integrity
+          )
+          for asset in "${expected[@]}"; do
+            [[ -s "release/$asset" ]]
+          done
+          [[ $(find release -maxdepth 1 -type f | wc -l) -eq 4 ]]
+          (cd release && sha256sum "${expected[@]}" > SHA256SUMS)
+
+      - name: Write public release metadata
+        shell: bash
+        env:
+          MANIFEST_PUBLIC_KEY: ${{ vars.SKYLICENSE_MANIFEST_PUBLIC_KEY }}
+          CERTIFICATE_PIN: ${{ vars.SKYLICENSE_CERT_SHA256 }}
+          NEXT_CERTIFICATE_PIN: ${{ vars.SKYLICENSE_CERT_SHA256_NEXT }}
+          AUTHENTICODE_CERTIFICATE_SHA256: ${{ vars.WINDOWS_CODESIGN_CERT_SHA256 }}
+        run: |
+          jq -n \
+            --arg buildId '${{ inputs.build_id }}' \
+            --arg securityEpoch '${{ inputs.security_epoch }}' \
+            --arg minimumSecurityEpoch '${{ inputs.minimum_security_epoch }}' \
+            --arg manifestPublicKey "$MANIFEST_PUBLIC_KEY" \
+            --arg certificateSha256 "$CERTIFICATE_PIN" \
+            --arg certificateSha256Next "$NEXT_CERTIFICATE_PIN" \
+            --arg authenticodeCertificateSha256 "$AUTHENTICODE_CERTIFICATE_SHA256" \
+            '{
+              format: "SkyLicense native release v1",
+              buildId: $buildId,
+              securityEpoch: ($securityEpoch | tonumber),
+              minimumSecurityEpoch: ($minimumSecurityEpoch | tonumber),
+              manifestPublicKey: $manifestPublicKey,
+              windowsAuthenticodeCertificateSha256: $authenticodeCertificateSha256,
+              certificateSha256: $certificateSha256,
+              certificateSha256Next: (
+                if $certificateSha256Next == "" then null else $certificateSha256Next end
+              )
+            }' > release/native-release.json
+
+      - name: Attest native build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            release/SkyLicense_64.dll
+            release/SkyLicense_64.dll.integrity
+            release/libSkyLicense_64.so
+            release/libSkyLicense_64.so.integrity
+            release/SHA256SUMS
+            release/native-release.json
+
+      - name: Publish non-overwriting native release
+        shell: bash
+        run: |
+          if gh release view '${{ inputs.release_tag }}' >/dev/null 2>&1; then
+            echo 'The requested native release tag already exists' >&2
+            exit 1
+          fi
+          if gh api \
+            "repos/$GITHUB_REPOSITORY/git/ref/tags/${{ inputs.release_tag }}" \
+            >/dev/null 2>&1; then
+            echo 'The requested native Git tag already exists' >&2
+            exit 1
+          fi
+          gh release create '${{ inputs.release_tag }}' release/* \
+            --target "$GITHUB_SHA" \
+            --title 'SkyLicense native ${{ inputs.release_tag }}' \
+            --notes 'Strict Windows/Linux x86-64 native libraries with signed integrity manifests.'

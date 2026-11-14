@@ -201,7 +201,7 @@ java -jar ../SkyLicense-Server.jar --extract-backup <备份路径>/backup.skybac
 
 ## 源码结构、前端开发和测试
 
-src/main/java 是服务端；Client-Side 是 Java SDK；web 是 Vue 前端；native 是原 MagicLicense-Client 的 Rust 客户端源码；examples/basic-app 是示例；deployment 是部署工具；tools 是隔离测试。
+src/main/java 是服务端；Client-Side 是 Java SDK；web 是 Vue 前端；native 是新版 SkyLicense-Client 的 Rust 客户端；examples/basic-app 是示例；deployment 是部署工具；tools 是隔离测试。
 根目录 Cargo.toml/Cargo.lock 管理 Rust 工作区，与 Gradle 服务端项目共存，三个项目不再需要独立源码目录。
 src/main/resources/static 保留内置前端资源，普通服务端构建不强制安装 Node.js。
 修改前端需 Node.js ^20.19.0 或 >=22.12.0、npm 10+：
@@ -213,9 +213,9 @@ npm run build
 ```
 
 将 web/dist 完整镜像到 src/main/resources/static，移除旧哈希资源后重新打包；不提交 node_modules 或运行时环境文件。
-API 默认同源 /api。基础版通过 252 项服务端、25 项 SDK 测试及真实认证、入口、ACK、心跳、拒绝、撤销、备份恢复和重启验证。
+API 默认同源 /api。基础版通过 255 项服务端、25 项 SDK 测试及真实认证、入口、ACK、心跳、拒绝、撤销、备份恢复和重启验证。
 
-当前前端依赖审计仍报告已知安全公告。对公网部署前请运行 npm audit 并评估兼容的依赖升级；功能测试通过不代表已完成全面安全认证。
+已通过兼容依赖更新清除前端已知高危告警，仍有 5 项开发工具相关中危告警。对公网部署前请运行 npm audit；功能测试通过不代表已完成全面安全认证。
 隔离测试脚本需 Python 3.10+ 与 cryptography：
 
 ```sh
@@ -226,15 +226,21 @@ python tools/test-basic-package.py
 
 包内脚本测试验收 Windows 入口；随机凭据及临时目录在源码之外创建。构建和单元测试不依赖运行配置。
 原生增强 SDK 为独立可选流程，:Client-Side:jar 继续拒绝缺失、未签名或加固不合格的原生资产，仓库不分发 CI DLL/SO。
-生产原生版需要匹配 v4 源码、发布身份、Windows 签名和 Linux 加固。
-本次合并的 [native 源码](native/README.zh-CN.md) 仍使用明文 v2 协议，不能直接连接当前 TLS/v4 服务端；禁止将其 DLL/SO 覆盖到当前 SDK。
-安装支持 edition 2024 的 Rust 工具链后，可在项目根目录独立执行现有原生单元测试：
+当前 [native 源码](native/README.zh-CN.md) 已替换为新版 SkyLicense-Client，支持当前 TLS/v4 协议。
+旧版已备份至仓库外 F:\Code\Source\MagicLicense-Client，不属于当前 Rust 工作区。
+安装 Rust 1.97.1、JDK 17/21 与 Python cryptography，先构建 Java 类及服务端，再在根目录运行严格模式真实联调；Windows 还需要 MSVC Build Tools：
 
 ```sh
-cargo test --workspace --locked
+python tools/local-smoke-test.py --native --build-native
 ```
 
-基础可用版的 Gradle 构建不依赖 Rust 或 Node.js，整理目录不会将旧原生客户端混入其运行包。
+该命令构建并签署 CI 测试原生库、验证平台加固并运行真实受保护 Java 程序，检查认证、入口、ACK、签名心跳、重复认证拒绝、
+封禁/到期/额度拒绝、不受信任 TLS、缺失/篡改清单、在线撤销和宿主停用通知，以及审计与备份恢复。
+随机凭据和证书仅写入新的私有临时目录，结束后正常关闭测试服务端；公开 CI 身份及测试证书禁止用于生产交付。
+正式接入见 [原生客户端指南](native/README.zh-CN.md) 和 [部署手册](DEPLOYMENT.md)。独立程序使用 cn.sky.license.NativeLauncher 并携带两个 JVM 加固参数；
+协议对齐、回归覆盖和已知限制见 [验证报告](VALIDATION.md)。
+嵌入宿主必须落实 disablePlugin()，退出时调用 SkyLicense.close()。正式发布仍需自己的 TLS、签名身份和 Windows Authenticode 材料。
+原生发布和 SDK 打包工作流现均在本仓库，安全门禁继续保留；基础版 Gradle 构建仍不依赖 Rust 或 Node.js。
 更多参考 [部署手册](DEPLOYMENT.md)、[API 文档](API-DOC.md)、[Linux](deployment/linux/README.md) / [Windows](deployment/windows/README.md) 服务模板。
 
 许可证见 [LICENSE](LICENSE)。

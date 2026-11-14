@@ -1,3 +1,19 @@
-# Keep the GNU linker map independent of a pre-existing target/release directory.
 [target.x86_64-pc-windows-gnu]
-rustflags = ["-C", "link-args=-Wl,--Map=SkyLicense.map"]
+rustflags = [
+    "-C", "control-flow-guard=yes",
+    "-C", "link-args=-Wl,--Map=SkyLicense.map"
+]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C", "control-flow-guard=yes",
+    "-C", "link-arg=/DYNAMICBASE",
+    "-C", "link-arg=/HIGHENTROPYVA",
+    "-C", "link-arg=/NXCOMPAT",
+    "-C", "link-arg=/GUARD:CF",
+    "-C", "link-arg=/INCREMENTAL:NO",
+    "-C", "link-arg=/CETCOMPAT"
+]
+
+#[target.i686-pc-windows-gnu]
+#linker = "cc."

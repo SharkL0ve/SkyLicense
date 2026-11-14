@@ -1,7 +1,7 @@
 # SkyLicense Web Console
 
 This is the `web/` module of the unified SkyLicense repository. The Java server is
-in `../src/`, the Java SDK is in `../Client-Side/`, and the legacy Rust client is
+in `../src/`, the Java SDK is in `../Client-Side/`, and the current Rust client is
 in `../native/`. For setup and license verification, start with the root
 [English guide](../README.md) or [Chinese guide](../README.zh-CN.md).
 
@@ -21,4 +21,4 @@ mirror `dist/` exactly into the server repository's
 `../src/main/resources/static/` directory so stale content-hashed assets are
 removed. The standalone frontend CI has been relocated to the root
 `.github/workflows/frontend-security-ci.yml`; its commands run under `web/`.
-The dependency audit gate is retained and currently reports known advisories.
+The dependency audit gate is retained: known high-severity findings were fixed; five moderate development-tool advisories remain.

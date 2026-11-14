@@ -3,8 +3,8 @@
 当前可直接运行的 **Java 基础版** 请先使用 [README 顶部流程](README.md) 或
 [基础版逐步使用手册](deployment/basic/README.md)。它通过 `basicReleaseZip` 打包，
 不依赖 DLL/SO；受保护程序认证、入口、ACK、心跳和在线撤销已做真实验证。
-下面保留的是原生增强版发布与部署规范，需要另外恢复匹配的 v4 原生源码及签名材料。
-本仓库 native/ 是旧 v2 客户端源码，不包含下文提及的 release-native、sign_artifact 或 verify_artifact 实现，不能按这些规范直接发布。
+下文为原生增强版发布与部署规范。native/ 已采用新版 v4 客户端，包含 sign_artifact 和 verify_artifact 工具，
+release-native 与 SDK 发布流程已统一到本仓库；生产签名材料仍须自行配置。
 
 这份手册是一次完整交付的执行顺序。它假定服务端、Vue 前端和 Java SDK
 已经从同一批源码构建；协议为 v4，认证和后台都只接受 TLS 1.3。
@@ -13,7 +13,7 @@
 
 当前源码目录默认不能直接用于生产：真实 config.json、生产 TLS 证书、原生库和凭据均不随源码提交。
 源码工作区也不是独立的 owner-only 部署目录。基础版请使用 README 的初始化脚本生成本地测试部署；
-原生增强版必须先恢复匹配源码、完成第 1 节的发布流程，再按第 3–4 节建立独立部署目录并配置凭据。
+原生增强版必须先完成第 1 节的发布流程，再按第 3–4 节建立独立部署目录并配置凭据。
 
 ## 1. 生成一次正式发布身份
 
@@ -31,7 +31,7 @@
 只保留新主 Pin 的清理版本。标准 CA 链和主机名校验始终执行，Pin 不能替代它们。
 
 生产原生库必须分别在 Windows MSVC 和 Linux GNU runner 构建，Windows 先做
-Authenticode，Linux 先做最终 strip，再生成 `.integrity`。使用客户端仓库的
+Authenticode，Linux 先做最终 strip，再生成 `.integrity`。使用本仓库的
 `release-native` 工作流发布四个资产；随后使用本仓库的
 `package-sdk-release` 下载并验证同一 Build ID、epoch、公钥和校验和，发布
 `SkyLicense.jar`。不要从开发机目录、普通 Actions artifact 或当前被忽略的

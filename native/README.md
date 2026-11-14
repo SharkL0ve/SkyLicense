@@ -1,41 +1,71 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-# SkyLicense Rust native client
+# SkyLicense native client
 
-For a working license-verification release, follow the [Basic edition guide](../README.md).
-It provides TLS/v4 verification without a native library.
+This module contains the updated **SkyLicense-Client**, not the older protocol-v2 client.
+It implements the current server's TLS 1.3 / protocol-v4 authentication, X25519/HKDF challenge,
+AES-GCM resource and method delivery, loading ACK, signed heartbeats and monotonic lease revocation.
+For the easiest Java-only setup, use the root [Basic edition guide](../README.md).
 
-This directory preserves the source formerly stored in `MagicLicense-Client`.
-It is now a member of the root Cargo workspace, with one root `Cargo.lock`.
-The server, Java SDK and Vue console are maintained in this same repository.
+## Run a real local system test
 
-## Compatibility boundary
+Run all commands from the repository root. Install JDK 17/21, Python 3.10+ and the pinned Rust 1.97.1 toolchain.
+On Windows, install Visual Studio MSVC C++ Build Tools and its Windows SDK, then add the target:
 
-- `src/lib.rs` currently opens a plain `TcpStream` and sends protocol version 2.
-- The current server requires TLS 1.3 and protocol 4, including release identity, challenges and loading ACK.
-- The imported source has no matching v4 signed-release workflow or manifests.
-- Compiling this crate or passing its unit tests does not prove server compatibility.
-
-Do **not** replace the current SDK's DLL/SO with an artifact from this directory.
-The production SDK packaging checks remain enabled. Restoring a matching v4 implementation and
-validating Windows/Linux release hardening are separate work; this directory consolidation does not implement them.
-
-## Development
-
-From the repository root, with a Rust toolchain supporting edition 2024:
-
-```sh
-cargo test --workspace --locked
-cargo check --workspace --locked
+```powershell
+rustup target add x86_64-pc-windows-msvc --toolchain 1.97.1
+.\gradlew.bat test :Client-Side:test bootJar --no-daemon
+python -m pip install cryptography
+python tools/local-smoke-test.py --native --build-native
 ```
 
-An optional build of this legacy crate is `cargo build --release --locked`; it is not the supported Basic edition.
-Outputs are under root `target/`. GNU Windows linker maps are written to `SkyLicense.map` and ignored by Git.
-The release profile is preserved from the original project. No binaries, caches, credentials or nested Git repository are imported.
-The original Rust source has been restored from the pre-consolidation backup. The attempted v4 upgrade has been cancelled.
-The original tests share global XOR-key state and can interfere when run in parallel; this legacy behavior is also preserved.
+On Linux, use the native GNU Rust target and a C compiler/binutils:
 
-The Java Basic package is built independently with `gradlew basicReleaseZip` (Windows: `gradlew.bat`).
-See the root [source layout and console instructions](../README.md#source-layout-and-console-development).
+```sh
+./gradlew test :Client-Side:test bootJar --no-daemon
+python3 -m pip install cryptography
+python3 tools/local-smoke-test.py --native --build-native
+```
 
+The test builds a **Strict**, TLS-enabled native library; signs and verifies its CI-test integrity manifest;
+checks PE/ELF hardening; deploys the real server; enrolls MFA; uploads the protected test program;
+issues a real test license; and runs it through `SkyLicense`'s normal native extraction/loading path.
+The protected program source is [SmokeEntry.java](../tools/fixtures/SmokeEntry.java); it includes inheritance,
+an interface default method, a covariant return and an integer result. It is invoked again after key rotation.
+Denial, malformed manifests, online revocation, Java host notification, audit, backup and restore are checked too.
+
+Success ends with `web_smoke=PASS`. Logs, generated credentials and certificates remain in a new private temporary directory.
+No existing deployment is touched, and the server is shut down after verification. The public CI identity is for tests only.
+Use `--rust-toolchain <name>` or `--native-target <triple>` only when explicitly testing another installed compiler/target.
+
+## Customer application
+
+Publish a protected JAR and issue its license using the root guide, then generate `license.dat` with the same customer-specific
+`SKYLICENSE_LICENSE_FILE_SECRET_FILE` used by the host. Keep `license.dat` at the host classpath root.
+The included [DemoApp](../examples/basic-app/src/example/Entry.java) is compatible with either SDK.
+With a properly signed `SkyLicense.jar`, start the standalone native host:
+
+```powershell
+java -XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading -cp ".;SkyLicense.jar" cn.sky.license.NativeLauncher license.example.com:13331 MyApp 1.0.0 customer-data
+```
+
+On Linux use `-cp '.:SkyLicense.jar'`. For a private CA, set `SKYLICENSE_NATIVE_CA_CERT_FILE` to its absolute PEM path.
+Certificate chain, validity, hostname and compiled Strict certificate pins are all still verified; there is no trust-all switch.
+For a public CA leave the variable unset. Both endpoints must allow the SDK's exact Build ID and security epoch.
+
+Embedded hosts implement `PluginProxy`, call `new SkyLicense(proxy).authenticate(...)`, retain the client,
+honor `disablePlugin()` by actually stopping protected operations, and call `close()` on shutdown.
+`isSessionActive()` reports the native lease; `getHeartbeatCount()` counts authenticated PONGs only.
+Only one native bridge is allowed per JVM. Repeated authentication after acceptance is refused before another resource release.
+Expired/revoked protected dispatch throws `SecurityException`; the Java monitor also notifies the host.
+
+## Production release
+
+The root workspace owns `Cargo.toml` profiles, `Cargo.lock`, `.cargo/config.toml` and `rust-toolchain.toml`.
+Use the root `release-native` and `package-sdk-release` workflows with protected environments.
+They build Windows/Linux artifacts from this module and package verified assets from a release in this same repository.
+Configure your own TLS certificate/pins, Ed25519 signing identity, Build ID/epoch and trusted Windows Authenticode material.
+Never ship the test certificate, fixed CI seed or fixed CI Build ID to customers. Formal packaging checks are not disabled.
+
+See [SECURITY.md](SECURITY.md) and [DEPLOYMENT.md](../DEPLOYMENT.md) for release identity and platform hardening requirements.
 Original project attribution: Client of MagicLicense, by pi_ka.
