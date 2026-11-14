@@ -26,7 +26,7 @@
     "@types/node": "^22.5.4",
     "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.8",
-    "sass": "^1.78.0",
+    "sass": "^1.108.1",
     "typescript": "^5.5.4",
     "unplugin-auto-import": "^0.18.2",
     "unplugin-vue-components": "^0.27.4",
