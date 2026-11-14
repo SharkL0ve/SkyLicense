@@ -41,7 +41,7 @@ ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 rustc-hash = "2.1"
 #protection
 libc = "0.2"
-sysinfo = "0.28"
+sysinfo = "0.40"
 lazy_static = "1.4"
 winapi = { version = "0.3.0", features = ["processthreadsapi", "memoryapi", "debugapi", "libloaderapi", "psapi", "winnt", "winbase", "handleapi", "wow64apiset", "tlhelp32", "ntdef", "errhandlingapi", "minwindef", "processenv", "fileapi", "namedpipeapi"] }
 nix = { version = "0.26", features = ["ptrace", "process", "mman"] }
