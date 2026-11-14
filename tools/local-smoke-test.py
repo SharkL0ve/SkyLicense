@@ -7,7 +7,7 @@ worked around with a trust-all verifier or a plaintext proxy.
 """
 import argparse
 import base64
-from contextlib import closing
+from contextlib import closing, contextmanager
 import datetime as dt
 import hashlib
 import hmac
@@ -36,6 +36,72 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+@contextmanager
+def user_owned_windows_objects():
+    """Use this test process's user, not an elevated token's group, as creator.
+
+    Only TokenOwner is changed; privileges and ACL policy are not relaxed.
+    Child test processes inherit this default, and it is restored on exit.
+    https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-of-a-new-object
+    """
+    if os.name != "nt":
+        yield
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    security = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    security.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                         ctypes.POINTER(wintypes.HANDLE)]
+    security.OpenProcessToken.restype = wintypes.BOOL
+    security.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                             wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    security.GetTokenInformation.restype = wintypes.BOOL
+    security.SetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                             wintypes.DWORD]
+    security.SetTokenInformation.restype = wintypes.BOOL
+    security.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    security.EqualSid.restype = wintypes.BOOL
+    token = wintypes.HANDLE()
+    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008 | 0x0080,
+                                     ctypes.byref(token)):  # QUERY | ADJUST_DEFAULT
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        def token_info(kind):
+            needed = wintypes.DWORD()
+            security.GetTokenInformation(token, kind, None, 0, ctypes.byref(needed))
+            if not 0 < needed.value <= 65_536:
+                raise ctypes.WinError(ctypes.get_last_error())
+            buffer = ctypes.create_string_buffer(needed.value)
+            if not security.GetTokenInformation(token, kind, buffer, needed.value,
+                                                 ctypes.byref(needed)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return buffer
+
+        user = token_info(1)  # TOKEN_USER starts with SID_AND_ATTRIBUTES.Sid.
+        owner = token_info(4)  # TOKEN_OWNER contains one SID pointer.
+        user_sid = ctypes.c_void_p.from_buffer(user).value
+        owner_sid = ctypes.c_void_p.from_buffer(owner).value
+        changed = not security.EqualSid(user_sid, owner_sid)
+        if changed:
+            new_owner = ctypes.c_void_p(user_sid)
+            if not security.SetTokenInformation(token, 4, ctypes.byref(new_owner),
+                                                 ctypes.sizeof(new_owner)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            yield
+        finally:
+            if changed and not security.SetTokenInformation(token, 4, owner,
+                                                            ctypes.sizeof(ctypes.c_void_p)):
+                raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.CloseHandle(token)
 
 
 def private_directory(path):
@@ -148,6 +214,7 @@ def main():
     parser.add_argument("--rust-toolchain", help="optional rustup toolchain override, e.g. nightly")
     parser.add_argument("--native-target", help="optional Rust target triple; Windows defaults to x86_64-pc-windows-msvc")
     parser.add_argument("--basic", action="store_true", help="test the packaged Java-only SDK, including heartbeat and rejection")
+    parser.add_argument("--preflight-only", action="store_true", help="check a fresh private deployment before the longer build/system suite")
     args = parser.parse_args()
     if args.basic and args.native:
         parser.error("choose --basic or --native")
@@ -261,6 +328,9 @@ def main():
             raise RuntimeError("maintenance failed; inspect private maintenance-failure.log")
     maintenance("--validate-config", marker="deployment_validation=ok")
     passed("fresh deployment preflight")
+    if args.preflight_only:
+        print("artifacts=" + str(root), flush=True)
+        return
     context = ssl.create_default_context(cafile=str(root / "certs/auth-chain.pem"))
     context.minimum_version = ssl.TLSVersion.TLSv1_3
     api = Api(f"https://localhost:{web_port}", context)
@@ -550,4 +620,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with user_owned_windows_objects():
+        main()

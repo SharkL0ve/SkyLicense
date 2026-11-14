@@ -37,6 +37,17 @@ jobs:
           java-version: "21"
           cache: gradle
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Install isolated-test dependency
+        run: python -m pip install cryptography
+      - name: Build server for early deployment checks
+        shell: bash
+        run: ./gradlew bootJar --no-daemon --warning-mode all
+      - name: Fresh private deployment preflight
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: python tools/local-smoke-test.py --preflight-only
       - name: Formatting and static checks
         run: |
           cargo fmt --all --check
@@ -46,8 +57,6 @@ jobs:
       - name: Java server and SDK
         shell: bash
         run: ./gradlew test :Client-Side:test bootJar basicReleaseZip --no-daemon --warning-mode all
-      - name: Install isolated-test dependency
-        run: python -m pip install cryptography
       - name: Real Strict TLS v4 system test
         env:
           TMPDIR: ${{ runner.temp }}

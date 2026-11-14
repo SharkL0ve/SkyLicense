@@ -46,6 +46,9 @@ This was a real server/SQLite/API/MFA deployment, not a mock, plaintext proxy or
    negotiate `Expect: 100-continue`, avoiding a Java 17/Linux upload-reset race without relaxing server limits.
 9. Canonicalized Windows 8.3 aliases for backup secret exclusions, destination containment and resource catalogs;
    symbolic links/reparse points remain rejected. Linux-specific hardware-identity code passes warnings-denied Clippy.
+10. The isolated Windows test harness uses its actual account as the temporary process-token default owner,
+    rather than an elevated runner's administrator group, and restores it on exit. Server owner-only policy is unchanged.
+    CI performs fresh deployment preflight before the longer native compilation/system suite.
 
 ## Verified locally
 
