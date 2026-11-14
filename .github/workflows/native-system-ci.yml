@@ -19,9 +19,6 @@ jobs:
             toolchain: 1.97.1-x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     env:
-      TMPDIR: ${{ runner.temp }}
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
       SKYLICENSE_MANIFEST_PUBLIC_KEY: ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
       SKYLICENSE_MIN_SECURITY_EPOCH: "1"
       SKYLICENSE_SECURITY_EPOCH: "1"
@@ -52,8 +49,16 @@ jobs:
       - name: Install isolated-test dependency
         run: python -m pip install cryptography
       - name: Real Strict TLS v4 system test
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: python tools/local-smoke-test.py --native --build-native
       - name: Basic SDK system regression
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: python tools/local-smoke-test.py --basic
       - name: Upload non-secret native diagnostics
         if: always()
