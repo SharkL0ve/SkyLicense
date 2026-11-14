@@ -92,7 +92,7 @@ class UndertowRequestGuardTest {
                     server.uri("/api/programs/42/versions?version=1.0.0"),
                     "POST", body, true));
             HttpResponse<byte[]> other = server.send(request(
-                    server.uri("/api/auth/login"), "POST", body, true));
+                    server.uri("/api/auth/login"), "POST", body, true, true));
 
             assertEquals(StatusCodes.NO_CONTENT, upload.statusCode());
             assertEquals(StatusCodes.REQUEST_ENTITY_TOO_LARGE, other.statusCode());
@@ -112,7 +112,7 @@ class UndertowRequestGuardTest {
         })) {
             HttpResponse<byte[]> response = server.send(request(
                     server.uri("/api/auth/login"),
-                    "POST", new byte[3 * 1024 * 1024], false));
+                    "POST", new byte[3 * 1024 * 1024], false, true));
 
             assertEquals(StatusCodes.REQUEST_ENTITY_TOO_LARGE, response.statusCode());
             assertEquals("no-store", response.headers()
@@ -148,8 +148,22 @@ class UndertowRequestGuardTest {
             byte[] body,
             boolean multipart
     ) {
+        return request(uri, method, body, multipart, false);
+    }
+
+    private static HttpRequest request(
+            URI uri,
+            String method,
+            byte[] body,
+            boolean multipart,
+            boolean expectContinue
+    ) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(15))
+                // The guard intentionally closes oversized requests without
+                // draining their bodies. Negotiate headers first so this test
+                // observes the early 413 rather than an OS-dependent upload reset.
+                .expectContinue(expectContinue)
                 .method(method, HttpRequest.BodyPublishers.ofByteArray(body));
         if (multipart) {
             builder.header("Content-Type", "multipart/form-data; boundary=test");

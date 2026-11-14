@@ -70,10 +70,10 @@ jobs:
           grep -Fx 'database_created=false' <<<"database_created=$(test ! -e web_magiclicense.db && echo false || echo true)"
       - name: SDK packaging fails closed without released native artifacts
         env:
-          SKYLICENSE_MANIFEST_PUBLIC_KEY: ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
+          SKYLICENSE_MANIFEST_PUBLIC_KEY: "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
           SKYLICENSE_MIN_SECURITY_EPOCH: "1"
           SKYLICENSE_SECURITY_EPOCH: "1"
-          SKYLICENSE_BUILD_ID: 0909090909090909090909090909090909090909090909090909090909090909
+          SKYLICENSE_BUILD_ID: "0909090909090909090909090909090909090909090909090909090909090909"
           SKYLICENSE_ARTIFACT_CHANNEL: ci-test
         run: |
           set +e

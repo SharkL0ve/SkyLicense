@@ -125,6 +125,7 @@ impl PinnedCertVerifier {
 /// WebPKI validity/hostname checks and compiled certificate pins still apply.
 #[cfg(not(feature = "insecure-plaintext"))]
 fn trust_roots(private_ca: Option<&std::ffi::OsStr>) -> Result<RootCertStore, String> {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
     use std::io::Read;
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -149,7 +150,7 @@ fn trust_roots(private_ca: Option<&std::ffi::OsStr>) -> Result<RootCertStore, St
             return Err("private CA certificate exceeds size limit".into());
         }
         let mut count = 0;
-        for certificate in rustls_pemfile::certs(&mut bytes.as_slice()) {
+        for certificate in CertificateDer::pem_slice_iter(&bytes) {
             roots
                 .add(certificate.map_err(|_| "invalid private CA PEM".to_string())?)
                 .map_err(|_| "invalid private CA certificate".to_string())?;

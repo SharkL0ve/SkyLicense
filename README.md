@@ -4,6 +4,8 @@
 
 A license server, management console and Java SDK for delivering protected Java applications over TLS 1.3.
 
+Use the Java-only quickstart below, or the current [native SDK guide](native/README.md). See [validation results](VALIDATION.md) for scope and limits.
+
 ## Getting started: the working Basic edition
 
 Basic implements the complete online verification path without DLLs: license checks, encrypted class delivery,

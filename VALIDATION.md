@@ -37,6 +37,13 @@ This was a real server/SQLite/API/MFA deployment, not a mock, plaintext proxy or
    Added interface/default-method, annotation and ordinary-class loading regression tests; dummy names cannot collide.
 5. Adapted workspace configuration and release/security workflows to this single repository.
 6. Updated compatible frontend dependencies and rebuilt the bundled console; high-severity npm findings were removed.
+7. Updated native TLS/async dependencies: rustls 0.23.46, rustls-webpki 0.103.17, webpki-roots 1.0.12 and Tokio 1.54.1.
+   Private-CA parsing uses the maintained rustls-pki-types PEM API. Relevant upstream advisories include
+   [TLS session debug redaction](https://rustsec.org/advisories/RUSTSEC-2026-0346),
+   [distrusted intermediates](https://rustsec.org/advisories/RUSTSEC-2026-0382) and
+   [trust-store update](https://rustsec.org/advisories/RUSTSEC-2026-0381).
+8. Quoted hexadecimal CI identities to prevent YAML numeric conversion. Made the early oversized-request regression
+   negotiate `Expect: 100-continue`, avoiding a Java 17/Linux upload-reset race without relaxing server limits.
 
 ## Verified locally
 

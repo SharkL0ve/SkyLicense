@@ -3,6 +3,7 @@
 # SkyLicense native client
 
 This module contains the updated **SkyLicense-Client**, not the older protocol-v2 client.
+Native release artifacts target x86-64 Windows and Linux.
 It implements the current server's TLS 1.3 / protocol-v4 authentication, X25519/HKDF challenge,
 AES-GCM resource and method delivery, loading ACK, signed heartbeats and monotonic lease revocation.
 For the easiest Java-only setup, use the root [Basic edition guide](../README.md).
@@ -52,6 +53,7 @@ java -XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading -cp ".;SkyLicens
 On Linux use `-cp '.:SkyLicense.jar'`. For a private CA, set `SKYLICENSE_NATIVE_CA_CERT_FILE` to its absolute PEM path.
 Certificate chain, validity, hostname and compiled Strict certificate pins are all still verified; there is no trust-all switch.
 For a public CA leave the variable unset. Both endpoints must allow the SDK's exact Build ID and security epoch.
+When switching from Basic to native, issue a fresh license or unbind the old Basic installation first: their identity algorithms differ.
 
 Embedded hosts implement `PluginProxy`, call `new SkyLicense(proxy).authenticate(...)`, retain the client,
 honor `disablePlugin()` by actually stopping protected operations, and call `close()` on shutdown.

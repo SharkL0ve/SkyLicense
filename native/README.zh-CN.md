@@ -3,6 +3,7 @@
 # SkyLicense 原生客户端
 
 本目录现在使用新版 **SkyLicense-Client**，不是之前的 v2 旧版。
+原生发行资产目前面向 x86-64 Windows 和 Linux。
 实现当前服务端的 TLS 1.3 / v4 认证、X25519/HKDF 挑战、AES-GCM 资源和方法下发、加载 ACK、签名心跳与单调时钟租约撤销。
 如需最简单的 Java 基础版使用流程，请先阅读 [根目录中文 README](../README.zh-CN.md)。
 
@@ -47,6 +48,7 @@ java -XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading -cp ".;SkyLicens
 Linux 将类路径改为 '.:SkyLicense.jar'。私有 CA 部署设置 SKYLICENSE_NATIVE_CA_CERT_FILE 为 CA PEM 的绝对路径；公共 CA 可不设置。
 证书链、有效期、主机名与严格模式编译时 Pin 始终验证，没有信任所有证书的开关。
 服务端必须放行该 SDK 的准确 Build ID 与 security epoch。
+从基础版切换到原生版时，请使用新许可证或先解绑旧安装：二者的绑定标识算法不同。
 
 嵌入宿主实现 PluginProxy，调用 new SkyLicense(proxy).authenticate(...)，持有客户端，并真正落实 disablePlugin() 来停止受保护业务，退出时调用 close()。
 isSessionActive() 查询原生租约，getHeartbeatCount() 仅统计已认证 PONG。每个 JVM 只允许一个原生桥接；成功后的重复认证不会再次释放资源。
