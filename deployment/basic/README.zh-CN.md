@@ -11,6 +11,8 @@
 
 安装完整 JDK 17 或 21，确保 `java` 和 `javac` 可用。解压整个包到自己的普通可写目录，
 打开 PowerShell，进入解压后的 `SkyLicense-Basic` 目录。以下命令均从这个目录执行。
+使用普通、非提权终端，文件须归实际运行用户所有，不能归 Administrators 组。
+此工具只初始化本机体验环境，不是正式证书或生产服务安装器。
 
 1. 执行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\SetupLocal.ps1`。
    在终端输入并确认初始管理员密码：12–128 位，大小写、数字、符号至少三类。
@@ -49,7 +51,26 @@ sh run.sh license
 sh run.sh client
 ```
 
-脚本使用相同 Java SDK，没有平台原生依赖。Linux 本机执行仍需自行验证；本次真实运行证据来自 Windows。
+基础版无平台原生依赖，基础版和原生版系统流程均已通过 Windows/Linux 测试，Windows 包内 PowerShell 初始化/启动/发证/客户流程也已实测。
+实际主机仍须验收 JDK、所有权、证书和防火墙。
+Linux 启动其他程序使用 sh run.sh client localhost:13331 MyApp 1.0.0。
+
+## 包结构及后续启动
+
+```text
+SkyLicense-Basic/
+  SkyLicense-Server.jar
+  SkyLicense-basic.jar
+  DemoApp-1.0.0.jar
+  SetupLocal.java / SetupLocal.ps1 / run.sh
+  StartServer.ps1 / MakeLicense.ps1 / StartClient.ps1
+  runtime/                       # 一次性生成，服务端专属数据和密钥
+  customer/                      # 一次性生成，客户授权文件、密钥和持久化状态
+```
+
+从包目录运行脚本，脚本自动进入 runtime/customer。Web 是 HTTPS 18443，客户端认证是 TLS TCP 13331，
+客户地址不能带 https:// 或误用 18443。服务端 runtime 不能交给客户，ZIP 没有预置许可证、真实配置或通用管理员密码。
+如果初始化中途失败，先保留已生成目录排查，不能盲目覆盖。
 
 ## 接入自己的程序
 
@@ -126,5 +147,9 @@ java -jar ../SkyLicense-Server.jar --verify-backup <备份路径>/backup.skyback
 java -jar ../SkyLicense-Server.jar --extract-backup <备份路径>/backup.skybackup <全新恢复目录>
 ```
 
+先把外部备份目录设置为 owner-only。新终端不会继承另一个 StartServer 终端的环境，必须明确映射原 operation-log-hmac.txt、
+mfa-encryption-key.txt 和 backup-hmac.txt。归档有认证但没有加密，应使用加密备份存储。
 归档不含 TLS 私钥和密钥文件，必须另行保存这些文件。恢复后修复 owner-only 权限、补回私钥及环境密钥，
 运行 `--validate-config` 后再启动。目录和密钥由服务账号独占访问，不能直接公开到下载站。
+
+完整服务端、Web、原生 SDK 和客户交付指南见 [仓库文档](https://github.com/SharkL0ve/SkyLicense#readme)。

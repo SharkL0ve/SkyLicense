@@ -4,17 +4,31 @@
 
 A license server, management console and Java SDK for delivering protected Java applications over TLS 1.3.
 
-Use the Java-only quickstart below, or the current [native SDK guide](native/README.md). See [validation results](VALIDATION.md) for scope and limits.
+Follow the complete first-run workflow below: server → Web console → protected JAR → license file → client.
+Use Basic for a first installation; use the signed native SDK when you need its additional runtime protections.
+
+| Component | Read this next |
+| --- | --- |
+| Server configuration, accounts and operations | [Server README](src/README.md) |
+| Web console, frontend build and HTTPS development | [Web README](web/README.md) |
+| Java Basic/native SDK and customer integration | [Java SDK README](Client-Side/README.md) |
+| Rust native builds, release identity and platform checks | [Native README](native/README.md) |
+| Protected application JAR | [Example README](examples/basic-app/README.md) |
+| Local package and production services | [Deployment index](deployment/README.md) |
+
+See [validation results](VALIDATION.md) for tested scope and remaining limits. A passing test build is not a production native release.
 
 ## Getting started: the working Basic edition
 
 Basic implements the complete online verification path without DLLs: license checks, encrypted class delivery,
 entry-point execution, loading acknowledgement, signed heartbeats and online revocation.
-Native anti-debugging, anti-dump and memory protection are deferred. The installation ID is not a hardware fingerprint.
+Basic intentionally excludes native anti-debugging, anti-dump and memory protection; these belong to the separate native SDK.
+Basic's installation ID is not a hardware fingerprint.
 
 ### 1. Build the runnable package
 
-Install a full **JDK 17 or 21** and clone this repository:
+Install a full **JDK 17 or 21** (`java`, `javac` and `keytool` must be available) and clone this repository.
+Use a normal user terminal, not an elevated administrator/root terminal, for the local demo:
 
 ```sh
 git clone https://github.com/SharkL0ve/SkyLicense.git
@@ -24,13 +38,13 @@ cd SkyLicense
 Windows PowerShell:
 
 ```powershell
-.\gradlew.bat test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
+.\gradlew.bat :test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
 ```
 
 Linux:
 
 ```sh
-./gradlew test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
+./gradlew :test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
 ```
 
 Extract `build/distributions/SkyLicense-Basic-1.0.0.zip` to a separate writable run directory.
@@ -110,8 +124,16 @@ sh run.sh license
 sh run.sh client
 ```
 
-Basic has no native platform dependency. Complete local runtime tests were performed on Windows; Linux shell syntax was checked,
-but execution still needs validation on the target Linux host.
+Both Basic and the Strict native workflow passed real Windows/Linux system tests. The packaged PowerShell launch scripts were
+also tested on Windows; validate the service-account, certificate and filesystem setup on each deployment host.
+
+### 6. Move the client to another computer
+
+Do not copy the initialized server `runtime/` directory to a customer. Deliver the launcher/SDK, `license.dat`,
+that customer's independent license-file secret, and only the public CA certificate when needed.
+Replace the localhost server certificate with one covering the real domain, update `authTlsServerName`, and expose the configured
+authentication port. The client endpoint is `license.example.com:13331`, not an HTTPS URL and not the Web port.
+See the [SDK customer-delivery checklist](Client-Side/README.md#customer-delivery-checklist) before distribution.
 
 ## Integrate your own application
 
@@ -141,7 +163,8 @@ Run a different program with the packaged host:
 .\StartClient.ps1 -Program MyApp -Version 1.0.0
 ```
 
-For an existing Java host, implement all six methods of `cn.sky.license.PluginProxy`, then call:
+For an existing Java host, implement all six methods of `cn.sky.license.PluginProxy`, then call (imports and lifecycle are documented
+in the [SDK README](Client-Side/README.md)):
 
 ```java
 BasicLicenseClient client = new BasicLicenseClient(proxy);
@@ -189,7 +212,8 @@ Save the original audit/MFA keys separately for disaster recovery; do not regene
 
 Basic uses the JVM CA store by default. For a private CA, set `SKYLICENSE_BASIC_CA_CERT_FILE` to its PEM file.
 Optionally set `SKYLICENSE_BASIC_CERT_SHA256` to the SHA-256 of the TLS leaf certificate's DER encoding.
-The packaged script selects the local test certificate; adjust it or launch directly for a public-CA server:
+The packaged script selects the local test certificate; adjust it or launch directly for a public-CA server.
+Run the following from the customer directory containing `license.dat` and `SkyLicense-basic.jar`:
 
 ```powershell
 $env:SKYLICENSE_LICENSE_FILE_SECRET_FILE = 'C:\MyCustomer\secrets\license-file-secret.txt'
@@ -242,6 +266,8 @@ npm run build
 ```
 
 Mirror `web/dist/` exactly into `src/main/resources/static/`, removing obsolete hashed assets, and rebuild the server.
+The [Web README](web/README.md) includes safe Windows/Linux copy steps and an authenticated HTTPS development setup.
+The default HTTP Vite development server is not a ready-to-use authenticated backend deployment.
 Do not publish `node_modules/` or runtime environment files. The API defaults to same-origin `/api`.
 
 Compatible dependency updates removed the known high-severity frontend findings. Five moderate development-tool advisories
@@ -252,24 +278,37 @@ remain; review `npm audit` before public deployment. Functional verification is 
 The baseline passed **256 server tests and 25 SDK tests**, plus packaged-JAR authentication, entry/ACK, heartbeats,
 rejection cases, online revocation, backup extraction and restart. Isolated tests need Python 3.10+ and `cryptography`:
 
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install cryptography
+.\.venv\Scripts\python.exe tools/local-smoke-test.py --basic
+.\.venv\Scripts\python.exe tools/test-basic-package.py
+```
+
+Linux (the packaged-script test is Windows-specific):
+
 ```sh
+python3 -m venv .venv
+. .venv/bin/activate
 python -m pip install cryptography
 python tools/local-smoke-test.py --basic
-python tools/test-basic-package.py
 ```
 
 The package test exercises Windows PowerShell scripts. Tests create temporary directories and random credentials outside the checkout.
 Builds and unit tests do not need runtime configuration.
+For a fast private-directory/TLS/configuration check after `bootJar`, run `python tools/local-smoke-test.py --preflight-only`.
 
 The native-enhanced SDK is optional and separate from Basic. `:Client-Side:jar` deliberately rejects missing, unsigned or non-hardened native assets.
 The updated [SkyLicense-Client](native/README.md) under `native/` implements the current TLS/v4 protocol.
-The old source was backed up outside this repository at `F:\Code\Source\MagicLicense-Client` and is not part of the active workspace.
+Historical client backups are not part of the active Rust workspace.
 For a real **Strict** native system test, install Rust 1.97.1, JDK 17/21 and Python `cryptography`, build the Java classes/server
 as above, and run from the repository root. Windows also needs MSVC Build Tools:
 
 ```sh
 python tools/local-smoke-test.py --native --build-native
 ```
+
+Use the virtual environment's Python; on Windows without activation this is .\.venv\Scripts\python.exe.
 
 This builds and signs a CI-test native library, verifies binary hardening, and runs a real encrypted/transformed Java application.
 It checks authentication, entry/ACK, verified heartbeats, repeat-auth rejection, license denial cases, untrusted TLS,

@@ -1,7 +1,14 @@
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 # Windows deployment templates
 
+For the first local demo use the [Basic package](../basic/README.md) in a normal user terminal.
+This guide configures an installed production service; first build the server and prepare real-domain TLS using the
+[server README](../../src/README.md). The installer intentionally changes ownership/ACLs on the selected live and backup trees;
+do not point it at the checkout or an unrelated directory.
+
 The template assumes a dedicated gMSA (recommended) or dedicated local service
-account, Java 17, and a verified WinSW release. WinSW is intentionally not
+account, JDK 17/21, and a verified WinSW release. WinSW is intentionally not
 bundled. Record its official release SHA-256 and pass it to the installer;
 never download an unverified wrapper at install time.
 
@@ -16,6 +23,10 @@ non-zero 64-character hexadecimal value. Each file contains one
 value and may end with one newline. During first start, temporarily add the
 bootstrap mapping shown in the XML, log in, change the password, then remove
 the mapping and source file.
+Complete administrator MFA, verify a second administrator, then restart to ensure bootstrap is no longer mapped.
+Use separate independent nonzero 64-hex audit/MFA/backup keys. Do not regenerate them during upgrades.
+The XML's Java path is an example: change it to the installed java.exe path before installation.
+Prepare the account and its Log on as a service right; for a gMSA ensure this host is authorized to use it.
 
 Run the installer from an elevated PowerShell prompt:
 
@@ -27,6 +38,11 @@ Set-ExecutionPolicy -Scope Process Bypass
   -WinSWPath 'C:\staging\winsw-x64.exe' `
   -ExpectedWinSWSha256 '<64-hex-sha256-from-your-release-record>'
 ```
+
+The installer prompts securely for a normal service account password; gMSA names ending in $ do not require a password.
+It installs/configures the service but does not start it. Set the documented _FILE mappings and run --validate-config in the deployment
+directory as that service account, then start the SkyLicense service through your approved service-management process.
+Windows service wrappers do not inherit an interactive terminal's environment; persist mappings in SkyLicense.xml.
 
 The script removes inherited ACLs and makes the service account the sole allow
 principal on live and backup paths. The server preflight is the final authority;
@@ -42,6 +58,14 @@ that account only query/start/stop rights on the SkyLicense service. The script
 stops the service, creates and verifies an authenticated archive, and starts
 the service again only when it was running before. Store the backup root on an
 encrypted volume and replicate verified archives off host.
+Pass the actual Java path when different from the template:
+
+```powershell
+.\Backup-SkyLicense.ps1 -DeploymentRoot 'C:\ProgramData\SkyLicense' -BackupRoot 'C:\ProgramData\SkyLicenseBackups' -JavaPath 'C:\YourJdk\bin\java.exe'
+```
+
+The archive has authentication but no encryption. Recover into a new directory, restore the excluded TLS key and original credentials,
+apply ownership/ACLs and pass preflight before switching the service. Never use forced termination as the normal upgrade procedure.
 
 After startup, monitor `https://<configured-host>:<webPort>/health/live` for
 process liveness and `/health/ready` for traffic readiness. Readiness requires

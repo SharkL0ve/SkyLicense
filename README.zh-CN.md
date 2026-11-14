@@ -4,16 +4,28 @@
 
 包含许可证服务端、管理网站和 Java SDK，通过 TLS 1.3 在线验证并下发受保护 Java 程序。
 
-Java 基础版使用下方流程，当前原生版使用 [原生 SDK 指南](native/README.zh-CN.md)；范围与限制见 [验证报告](VALIDATION.md)。
+先按下方完整流程跑通：服务端 → Web 管理后台 → 上传受保护 JAR → 签发授权文件 → 客户端验证。
+首次使用推荐 Java 基础版；需要额外运行时防护时再按原生版发布流程接入。
+
+| 组件 | 使用文档 |
+| --- | --- |
+| 服务端配置、账号及运维 | [服务端 README](src/README.zh-CN.md) |
+| Web 操作、前端构建及 HTTPS 开发 | [Web README](web/README.zh-CN.md) |
+| Java 基础版/原生版 SDK 与客户接入 | [Java SDK README](Client-Side/README.zh-CN.md) |
+| Rust 原生构建、签名与平台检查 | [原生 README](native/README.zh-CN.md) |
+| 受保护程序 JAR | [示例 README](examples/basic-app/README.zh-CN.md) |
+| 本地运行包与生产服务部署 | [部署索引](deployment/README.zh-CN.md) |
+
+已验证范围及限制见 [验证报告](VALIDATION.md)；CI 测试构建不能作为正式原生发行包交付。
 
 ## 从这里开始：基础可用版
 
 基础版不依赖 DLL/SO，已实现许可证检查、加密类下发、入口执行、加载 ACK、签名心跳和在线撤销。
-原生反调试、反转储、内存保护暂缓；持久化安装标识**不是硬件指纹**。
+基础版有意不包含原生反调试、反转储、内存保护，这些能力属于独立的原生 SDK；基础版持久化安装标识**不是硬件指纹**。
 
 ### 1. 构建运行包
 
-安装完整 **JDK 17 或 21**，克隆仓库：
+安装完整 **JDK 17 或 21**，确认 `java`、`javac`、`keytool` 可用。本机体验使用普通用户终端，不要以管理员/root 身份运行：
 
 ```sh
 git clone https://github.com/SharkL0ve/SkyLicense.git
@@ -23,13 +35,13 @@ cd SkyLicense
 Windows PowerShell：
 
 ```powershell
-.\gradlew.bat test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
+.\gradlew.bat :test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
 ```
 
 Linux：
 
 ```sh
-./gradlew test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
+./gradlew :test :Client-Side:test basicReleaseZip --no-daemon --warning-mode all
 ```
 
 生成 `build/distributions/SkyLicense-Basic-1.0.0.zip`，解压到独立可写目录，不要把业务数据库放在 build 下。
@@ -102,7 +114,15 @@ sh run.sh license
 sh run.sh client
 ```
 
-基础 SDK 无平台原生依赖。完整运行实测平台为 Windows；Linux shell 已检查语法，仍需在目标主机验收。
+基础版和严格模式原生版均已完成 Windows/Linux 真实系统测试，Windows 包内 PowerShell 脚本也已实测。
+每台部署主机仍需验收服务账号、文件权限、证书、端口和防火墙配置。
+
+### 6. 把客户端交付到其他电脑
+
+不要把初始化后的服务端 runtime 目录交给客户。客户只接收启动器/SDK、license.dat、该客户独立的授权文件密钥，
+以及需要时的公开 CA 证书。远程服务必须使用包含实际域名的证书，同步 authTlsServerName，并开放认证端口。
+客户端地址写 license.example.com:13331，不带 https://，也不是 Web 管理端口。
+交付前核对 [客户端交付清单](Client-Side/README.zh-CN.md#客户交付清单)。
 
 ## 接入自己的应用
 
@@ -131,7 +151,7 @@ KeepClasses 是匹配斜杠 JVM 类名的 RE2/J 正则；匹配类仍加密传�
 .\StartClient.ps1 -Program MyApp -Version 1.0.0
 ```
 
-已有 Java 宿主实现 `cn.sky.license.PluginProxy` 的六个方法后调用：
+已有 Java 宿主实现 `cn.sky.license.PluginProxy` 的六个方法后调用；完整导入、接口契约和生命周期见 [SDK README](Client-Side/README.zh-CN.md)：
 
 ```java
 BasicLicenseClient client = new BasicLicenseClient(proxy);
@@ -173,7 +193,8 @@ Build ID 仅是软件版本标记，当前为
 各为非零 32 字节十六进制值。bootstrap 仅首次启动，原审计/MFA 密钥须纳入独立灾备，不能每次重启重新生成。
 
 公共 CA 使用 JVM 信任库；私有 CA 用 SKYLICENSE_BASIC_CA_CERT_FILE 指向 PEM。
-可选 SKYLICENSE_BASIC_CERT_SHA256 为叶证书 DER 的 SHA-256。包内 StartClient 默认本机证书，远程公共 CA 可直接运行：
+可选 SKYLICENSE_BASIC_CERT_SHA256 为叶证书 DER 的 SHA-256。包内 StartClient 默认本机证书，远程公共 CA 可直接运行。
+以下命令须在同时含 license.dat 和 SkyLicense-basic.jar 的客户目录中执行：
 
 ```powershell
 $env:SKYLICENSE_LICENSE_FILE_SECRET_FILE = 'C:\MyCustomer\secrets\license-file-secret.txt'
@@ -215,26 +236,40 @@ npm run build
 ```
 
 将 web/dist 完整镜像到 src/main/resources/static，移除旧哈希资源后重新打包；不提交 node_modules 或运行时环境文件。
+[Web README](web/README.zh-CN.md) 提供 Windows/Linux 安全复制命令和完整 HTTPS 开发配置；默认 HTTP Vite 服务不能直接当作已配置好的后台登录环境。
 API 默认同源 /api。基础版通过 256 项服务端、25 项 SDK 测试及真实认证、入口、ACK、心跳、拒绝、撤销、备份恢复和重启验证。
 
 已通过兼容依赖更新清除前端已知高危告警，仍有 5 项开发工具相关中危告警。对公网部署前请运行 npm audit；功能测试通过不代表已完成全面安全认证。
 隔离测试脚本需 Python 3.10+ 与 cryptography：
 
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install cryptography
+.\.venv\Scripts\python.exe tools/local-smoke-test.py --basic
+.\.venv\Scripts\python.exe tools/test-basic-package.py
+```
+
+Linux（包内 PowerShell 脚本测试仅限 Windows）：
+
 ```sh
+python3 -m venv .venv
+. .venv/bin/activate
 python -m pip install cryptography
 python tools/local-smoke-test.py --basic
-python tools/test-basic-package.py
 ```
 
 包内脚本测试验收 Windows 入口；随机凭据及临时目录在源码之外创建。构建和单元测试不依赖运行配置。
+构建 bootJar 后，可先运行 python tools/local-smoke-test.py --preflight-only，快速检查私有部署目录、TLS 和配置。
 原生增强 SDK 为独立可选流程，:Client-Side:jar 继续拒绝缺失、未签名或加固不合格的原生资产，仓库不分发 CI DLL/SO。
 当前 [native 源码](native/README.zh-CN.md) 已替换为新版 SkyLicense-Client，支持当前 TLS/v4 协议。
-旧版已备份至仓库外 F:\Code\Source\MagicLicense-Client，不属于当前 Rust 工作区。
+历史客户端备份不属于当前 Rust 工作区。
 安装 Rust 1.97.1、JDK 17/21 与 Python cryptography，先构建 Java 类及服务端，再在根目录运行严格模式真实联调；Windows 还需要 MSVC Build Tools：
 
 ```sh
 python tools/local-smoke-test.py --native --build-native
 ```
+
+使用上方虚拟环境中的 Python；Windows 未激活时改用 .\.venv\Scripts\python.exe。
 
 该命令构建并签署 CI 测试原生库、验证平台加固并运行真实受保护 Java 程序，检查认证、入口、ACK、签名心跳、重复认证拒绝、
 封禁/到期/额度拒绝、不受信任 TLS、缺失/篡改清单、在线撤销和宿主停用通知，以及审计与备份恢复。

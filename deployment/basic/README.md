@@ -10,6 +10,8 @@ signed heartbeats and online revocation. Native anti-debugging/memory protection
 
 Install a full JDK 17 or 21. Extract the complete package to a writable directory and open PowerShell there.
 Run all commands below from the extracted SkyLicense-Basic directory.
+Use a normal, non-elevated user terminal. Files must belong to that runtime user, not the Administrators group.
+This is a localhost demonstration, not a production certificate/service installer.
 
 1. Run `powershell -NoProfile -ExecutionPolicy Bypass -File .\SetupLocal.ps1`.
    Enter and confirm the initial admin password: 12–128 characters with at least three of uppercase, lowercase, digits and symbols.
@@ -49,8 +51,29 @@ sh run.sh license
 sh run.sh client
 ```
 
-The same Java implementation has no native platform dependency. Windows runtime tests passed;
-Linux shell syntax was checked, but validate execution on your target Linux host.
+The Java implementation has no native platform dependency. Basic and native system workflows have passed Windows/Linux tests;
+the packaged PowerShell setup/start/license/client workflow was also tested on Windows. Validate the actual host's JDK, ownership,
+certificate and firewall before deployment.
+
+For another program on Linux use sh run.sh client localhost:13331 MyApp 1.0.0.
+
+## Package layout and later starts
+
+```text
+SkyLicense-Basic/
+  SkyLicense-Server.jar
+  SkyLicense-basic.jar
+  DemoApp-1.0.0.jar
+  SetupLocal.java / SetupLocal.ps1 / run.sh
+  StartServer.ps1 / MakeLicense.ps1 / StartClient.ps1
+  runtime/                       # generated once; server-only data and secrets
+  customer/                      # generated once; customer license/key and persistent state
+```
+
+Run server/client commands from this package directory; the scripts select runtime/customer automatically.
+Web is HTTPS port 18443; verification is TLS TCP port 13331. A customer endpoint must not contain https:// or use port 18443.
+Do not share the server runtime with customers. The ZIP contains no pre-issued license, real configuration or universal admin password.
+If setup fails part way through, preserve the generated directories for diagnosis instead of rerunning over them blindly.
 
 ## Your own application
 
@@ -114,6 +137,12 @@ java -jar ../SkyLicense-Server.jar --verify-backup <backup-path>/backup.skybacku
 java -jar ../SkyLicense-Server.jar --extract-backup <backup-path>/backup.skybackup <new-restore-directory>
 ```
 
-Replace the placeholder paths. Archives exclude TLS private keys and environment secrets; save them separately.
+Replace the placeholder paths and prepare the external destination as an owner-only directory first.
+In a new terminal the server script's environment is not inherited: map the original operation-log-hmac.txt and mfa-encryption-key.txt
+as well as backup-hmac.txt explicitly. Archives are authenticated but not encrypted; use encrypted backup storage.
+Archives exclude TLS private keys and environment secrets; save them separately.
 Restore private files and owner-only permissions, then pass --validate-config before starting a restored deployment.
 Do not distribute initialized runtime/customer directories or upload them to Git.
+
+For the full server, Web, native SDK and customer-delivery guides, see the
+[repository documentation](https://github.com/SharkL0ve/SkyLicense#readme).

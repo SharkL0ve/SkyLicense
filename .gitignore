@@ -83,6 +83,7 @@ replay_pid*
 /Remote-Control/
 /web/vite.config.js
 /web/vite.config.d.ts
+/web/vite.local.config.ts
 
 # Editors, OS metadata and Python test caches
 .idea/

@@ -1,5 +1,7 @@
 # SkyLicense 部署与使用手册
 
+English: [server guide](src/README.md) · 中文：[服务端快速手册](src/README.zh-CN.md) · [全套文档导航](README.zh-CN.md)
+
 本文档描述协议 v4、TLS 1.3 和 Web 管理后台统一后的生产流程。旧控制台发证、明文 HTTP、旧 WebSocket 远控和协议 v1-v3 均不再可用。
 
 当前已验证可用的版本请先阅读 [英文 README](README.md) / [中文 README](README.zh-CN.md) 顶部的 Java 基础版流程。
@@ -119,7 +121,7 @@ GitHub Release tag 已存在时原生工作流会拒绝覆盖；需要修复时�
   "authTlsServerName": "license.example.com",
   "minimumClientSecurityEpoch": 1,
   "allowedClientBuildIds": ["<64位十六进制Build ID>"],
-  "webPort": 8080,
+  "webPort": 18443,
   "allowedWebOrigins": []
 }
 ```
@@ -184,7 +186,7 @@ AES-256-GCM 加密数据库中的 TOTP 种子。它不会进入备份归档，�
 修改管理前端后，先使用 Node.js `^20.19.0` 或 `>=22.12.0` 按锁文件构建，并将 `dist` 完整镜像到服务端 `src/main/resources/static`；不能只覆盖新文件而保留旧哈希资源：
 
 ```powershell
-cd F:\Code\Source\SkyLicense\web
+cd web
 npm ci
 npm run build
 ```
@@ -193,8 +195,11 @@ npm run build
 
 ```powershell
 .\gradlew.bat clean test :Client-Side:test bootJar --no-daemon --warning-mode all
-java -jar .\build\libs\SkyLicense-Server.jar
 ```
+
+上述 Gradle 命令从仓库根目录执行（构建前端后先 cd ..）。将 build/libs/SkyLicense-Server.jar 复制到独立部署目录，
+配置完成后从该部署目录预检/启动，不能直接在源码工作区运行上面的 JAR。
+完整前端复制命令及 HTTPS 开发环境见 [Web README](web/README.zh-CN.md)。
 
 客户 SDK 应从 `package-sdk-release` 产生且通过 provenance/SHA-256 校验的正式 Release
 获取，不应使用仓库当前的 CI 测试原生文件临时打包。
@@ -261,7 +266,8 @@ Web 会话。账号、来源地址、MFA 挑战和 MFA 管理操作的失败计�
 $env:SKYLICENSE_OPERATION_LOG_HMAC_KEY_FILE = 'C:\ProgramData\SkyLicense\secrets\operation-log-hmac.txt'
 $env:SKYLICENSE_MFA_ENCRYPTION_KEY_FILE = 'C:\ProgramData\SkyLicense\secrets\mfa-encryption-key.txt'
 $env:SKYLICENSE_BOOTSTRAP_ADMIN_PASSWORD_FILE = 'C:\ProgramData\SkyLicense\secrets\bootstrap-admin.txt'
-java -jar .\build\libs\SkyLicense-Server.jar
+java -jar .\SkyLicense-Server.jar --validate-config
+java -XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading -jar .\SkyLicense-Server.jar
 ```
 
 Linux 示例：
@@ -270,7 +276,8 @@ Linux 示例：
 export SKYLICENSE_OPERATION_LOG_HMAC_KEY_FILE='/run/credentials/skylicense.service/operation-log-hmac'
 export SKYLICENSE_MFA_ENCRYPTION_KEY_FILE='/run/credentials/skylicense.service/mfa-encryption-key'
 export SKYLICENSE_BOOTSTRAP_ADMIN_PASSWORD_FILE='/run/credentials/skylicense.service/bootstrap-admin-password'
-exec java -jar ./build/libs/SkyLicense-Server.jar
+java -jar ./SkyLicense-Server.jar --validate-config
+exec java -XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading -jar ./SkyLicense-Server.jar
 ```
 
 正式环境不要把上述值写入 shell 历史、命令行参数或仓库；应使用 Windows 服务
@@ -283,7 +290,7 @@ JAR。目录为空允许首次通过后台上传版本；数据库引用的文�
 `.jar.part` 会先移入 `resources.quarantine/`，既不会加载也不会进入备份。运行时重载
 失败则保持上一份有效快照。
 
-Linux 建议使用专用低权限用户和 systemd `EnvironmentFile`，并将工作目录、数据库、资源目录权限限制给该用户。不要以 root 运行服务端。
+Linux 建议使用专用低权限用户和 systemd LoadCredential 将凭据映射为 _FILE，并将工作目录、数据库、资源目录权限限制给该用户。不要以 root 运行服务端。
 
 Windows 同样必须使用专用低权限服务账号。部署工具应先把 `auth-key.pem`、既有
 `web_magiclicense.db`/`-wal`/`-shm` 和 `resources` 的所有者改为该账号，再禁用
@@ -387,39 +394,11 @@ java -cp .\SkyLicense.jar cn.sky.license.LicenseFileTool .\license.dat
 
 ### 8.1 Java 宿主接入
 
-客户宿主只负责实现 SDK 的 `PluginProxy` 适配器；受保护 JAR 的入口类由服务端
-在认证成功后下发，不应再把同一份入口类放进客户宿主包。最小独立宿主示例：
-
-```java
-import cn.sky.license.PluginProxy;
-import cn.sky.license.Resource;
-import cn.sky.license.Response;
-import cn.sky.license.SkyLicense;
-
-import java.io.File;
-import java.io.InputStream;
-
-public final class LicenseBootstrap implements PluginProxy {
-    public static void main(String[] args) {
-        SkyLicense client = new SkyLicense(new LicenseBootstrap());
-        Response response = client.authenticate(
-                "license.example.com:13331", "MyPlugin", "1.0.0");
-        if (response != Response.ACCEPT) {
-            throw new IllegalStateException("License authentication failed: " + response);
-        }
-        // ACCEPT means resource load, entry return, heartbeat and ACK all succeeded.
-    }
-
-    @Override public File getDataFolder() { return new File("data"); }
-    @Override public void info(String text) { System.err.println(text); }
-    @Override public void disablePlugin() { throw new IllegalStateException("Plugin disabled"); }
-    @Override public InputStream getResource(String name) {
-        return LicenseBootstrap.class.getClassLoader().getResourceAsStream(name);
-    }
-    @Override public Resource getResourceType() { return Resource.CLEAR_LOWERCASE; }
-    @Override public boolean isPrimaryThread() { return true; }
-}
-```
+独立程序优先使用 SDK 自带 cn.sky.license.NativeLauncher，它会保持进程存活并在在线撤销时退出。
+嵌入已有宿主时实现 PluginProxy，完整接口契约和生命周期见 [Java SDK 手册](Client-Side/README.zh-CN.md)。
+必须持有客户端、保持宿主运行、在退出时 close，并在 disablePlugin 中真正停止业务。
+仅在后台回调中抛异常不能停止其他业务线程，认证后 main 直接返回也不能替代持续运行的宿主。
+入口类由服务端认证后下发，不应把同一入口类重复放进客户宿主包。
 
 `MyPlugin` 和 `1.0.0` 必须分别等于后台程序名和上传版本的 `Name`/`Version`，
 且只使用安全 ASCII 标识。地址只写 `主机名[:端口]`，不能写 `https://`、路径或
@@ -437,19 +416,21 @@ SDK 会把原生库和签名清单提取到 `PluginProxy.getDataFolder()/authlib
 # Windows；点号让 classloader 找到当前目录的 license.dat
 $env:SKYLICENSE_LICENSE_FILE_SECRET_FILE = 'C:\ProgramData\SkyLicenseClient\secrets\license-file-secret.txt'
 java -XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading `
-  -cp ".;customer-app.jar;SkyLicense.jar" LicenseBootstrap
+  -cp ".;SkyLicense.jar" cn.sky.license.NativeLauncher license.example.com:13331 MyPlugin 1.0.0 customer-data
 ```
 
 ```bash
 # Linux
 export SKYLICENSE_LICENSE_FILE_SECRET_FILE='/run/credentials/customer-app.service/license-file-secret'
 java -XX:+DisableAttachMechanism -XX:-EnableDynamicAgentLoading \
-  -cp ".:customer-app.jar:SkyLicense.jar" LicenseBootstrap
+  -cp ".:SkyLicense.jar" cn.sky.license.NativeLauncher license.example.com:13331 MyPlugin 1.0.0 customer-data
 ```
 
 生成 `license.dat` 时使用的 `SKYLICENSE_LICENSE_FILE_SECRET[_FILE]` 必须与客户启动时
 解析到完全相同的值；每个客户应使用独立随机值，可用 `openssl rand -base64 48`
 生成后直接写入受限凭据文件，避免输出到 shell 历史。
+私有 CA 还须设置 SKYLICENSE_NATIVE_CA_CERT_FILE 为公开 CA PEM 的绝对路径；这不会跳过主机名、有效期或编译 Pin。
+原生 Pin 为构建期配置，不能通过运行时环境变量替换。已有非原生客户切换到原生时，使用新许可证或明确解绑旧绑定。
 `ACCEPT` 以外的结果应先查看服务端验证日志：网络/忙碌类结果可由宿主按
 `Response.retry()` 做有限重试，入口异常、绑定、额度、撤销和
 `DELIVERY_ACK_ERROR` 都不能在同一 JVM 进程内重试，需修复原因后重新启动进程。

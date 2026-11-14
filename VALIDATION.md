@@ -63,10 +63,19 @@ This was a real server/SQLite/API/MFA deployment, not a mock, plaintext proxy or
 - The actual Basic ZIP's setup/server/license/client scripts, protected DemoApp, ACK and revocation.
 - Frontend type check/production build; `npm audit --audit-level=high` succeeds. Five moderate development-tool advisories remain.
 
-Linux native runtime validation is executed by `native-system-ci` on Ubuntu; do not treat cross-compilation alone as a runtime pass.
+Both Windows and Ubuntu native/Basic system jobs passed on 2026-11-14:
+[real cross-platform system run](https://github.com/SharkL0ve/SkyLicense/actions/runs/43596436744),
+validated source [5d35741](https://github.com/SharkL0ve/SkyLicense/commit/5d3574194c695c7f2dcb0041702eee1e1e11b4ba).
+This includes real TLS authentication, transformed entry/ACK, key rotation, signed heartbeats, revocation, audit and backup/restore;
+cross-compilation alone is not used as runtime evidence.
 The `native-security-ci` matrix preserves profile, signature, hardening and load-negative checks on Windows and Ubuntu.
 
 ## Reproduce
+
+The documentation refresh was checked separately: 24 documentation files / 226 local links and anchors;
+frontend type-check/build; rebuilt Basic ZIP with both updated README files; and the documented HTTPS Vite override against an
+isolated real server. The proxy check covered verified upstream TLS, Secure session cookies, MFA enrollment/relogin,
+authenticated writes, and rejection of missing CSRF/wrong Origin. It did not change application security policy or touch a live deployment.
 
 ```sh
 ./gradlew test :Client-Side:test bootJar basicReleaseZip --no-daemon
