@@ -110,7 +110,7 @@ public final class DeploymentBackup {
         if (!preflight.database().exists()) {
             throw new IllegalStateException("cannot back up a deployment without a database");
         }
-        Path archive = destination.toAbsolutePath().normalize();
+        Path archive = SecureFiles.canonicalPath(destination);
         if (archive.startsWith(root)) {
             throw new IllegalArgumentException(
                     "backup destination must be outside the live deployment directory");
@@ -264,7 +264,7 @@ public final class DeploymentBackup {
     }
 
     static void extract(VerifiedArchive verified, Path destination) throws Exception {
-        Path root = destination.toAbsolutePath().normalize();
+        Path root = SecureFiles.canonicalPath(destination);
         Path parent = root.getParent();
         if (parent == null || !Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalArgumentException("restore destination parent does not exist");
@@ -431,7 +431,7 @@ public final class DeploymentBackup {
             if (path == null) {
                 throw new IllegalArgumentException("excluded secret file path must not be null");
             }
-            secretFiles.add(path.toAbsolutePath().normalize());
+            secretFiles.add(SecureFiles.canonicalPath(path));
         }
         addSource(sources, root, root.resolve("config.json"), "configuration");
         addSource(
@@ -440,7 +440,8 @@ public final class DeploymentBackup {
                 root.resolve(WebDataAccessor.DEFAULT_DATABASE_PATH).normalize(),
                 "database");
 
-        Path privateKey = configuredPath(root, storage.getAuthTlsPrivateKey());
+        Path privateKey = SecureFiles.canonicalPath(
+                configuredPath(root, storage.getAuthTlsPrivateKey()));
         Path resources = root.resolve("resources").normalize();
         if (catalogResources != null) {
             for (Path resource : catalogResources) {
@@ -477,7 +478,8 @@ public final class DeploymentBackup {
             }
         }
 
-        Path certificate = configuredPath(root, storage.getAuthTlsCertificateChain());
+        Path certificate = SecureFiles.canonicalPath(
+                configuredPath(root, storage.getAuthTlsCertificateChain()));
         if (certificate.startsWith(root) && !secretFiles.contains(certificate)) {
             addSource(sources, root, certificate, "TLS certificate chain");
         }

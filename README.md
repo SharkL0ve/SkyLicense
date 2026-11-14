@@ -249,7 +249,7 @@ remain; review `npm audit` before public deployment. Functional verification is 
 
 ## Tests and optional native SDK
 
-The baseline passed **255 server tests and 25 SDK tests**, plus packaged-JAR authentication, entry/ACK, heartbeats,
+The baseline passed **256 server tests and 25 SDK tests**, plus packaged-JAR authentication, entry/ACK, heartbeats,
 rejection cases, online revocation, backup extraction and restart. Isolated tests need Python 3.10+ and `cryptography`:
 
 ```sh

@@ -124,10 +124,7 @@ fn push_file_identifier(
     label: &'static str,
     candidates: &[&str],
 ) {
-    if let Some(value) = candidates
-        .iter()
-        .find_map(|path| read_identifier_file(path))
-    {
+    if let Some(value) = candidates.iter().find_map(read_identifier_file) {
         components.push((label, value));
     }
 }
@@ -140,10 +137,10 @@ fn read_cpu_identifier() -> Option<String> {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
-        if matches!(name.trim(), "Serial" | "model name" | "Hardware") {
-            if let Some(value) = normalize_identifier(value) {
-                return Some(value);
-            }
+        if matches!(name.trim(), "Serial" | "model name" | "Hardware")
+            && let Some(value) = normalize_identifier(value)
+        {
+            return Some(value);
         }
     }
     None
@@ -165,7 +162,7 @@ fn read_disk_identifier() -> Option<String> {
     devices.sort();
     for device in devices {
         for relative in ["device/serial", "serial"] {
-            if let Some(value) = read_identifier_file(&device.join(relative)) {
+            if let Some(value) = read_identifier_file(device.join(relative)) {
                 return Some(value);
             }
         }

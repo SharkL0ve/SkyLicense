@@ -4,6 +4,7 @@ import cn.sky.skylicense.SkyLicense;
 import cn.sky.skylicense.encrypt.BytecodeMutator;
 import cn.sky.skylicense.encrypt.EncryptUtil;
 import cn.sky.skylicense.netty.SessionManager;
+import cn.sky.skylicense.security.SecureFiles;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -109,7 +110,7 @@ public final class ResourceManager {
             boolean logDetails,
             boolean createWhenMissing
     ) throws IOException {
-        Path normalizedRoot = root.toAbsolutePath().normalize();
+        Path normalizedRoot = SecureFiles.canonicalPath(root);
         if (createWhenMissing) {
             Files.createDirectories(normalizedRoot);
         } else if (!Files.exists(normalizedRoot, LinkOption.NOFOLLOW_LINKS)) {
@@ -221,7 +222,7 @@ public final class ResourceManager {
                     || entry.path() == null) {
                 throw new IOException("resource catalog contains an incomplete entry");
             }
-            Path path = entry.path().toAbsolutePath().normalize();
+            Path path = SecureFiles.canonicalPath(entry.path());
             CatalogEntry normalized = new CatalogEntry(entry.name(), entry.version(), path);
             if (byPath.putIfAbsent(path, normalized) != null) {
                 throw new IOException("resource catalog contains a duplicate path: " + path);

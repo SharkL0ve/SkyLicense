@@ -44,10 +44,12 @@ This was a real server/SQLite/API/MFA deployment, not a mock, plaintext proxy or
    [trust-store update](https://rustsec.org/advisories/RUSTSEC-2026-0381).
 8. Quoted hexadecimal CI identities to prevent YAML numeric conversion. Made the early oversized-request regression
    negotiate `Expect: 100-continue`, avoiding a Java 17/Linux upload-reset race without relaxing server limits.
+9. Canonicalized Windows 8.3 aliases for backup secret exclusions, destination containment and resource catalogs;
+   symbolic links/reparse points remain rejected. Linux-specific hardware-identity code passes warnings-denied Clippy.
 
 ## Verified locally
 
-- JDK 21: 255 server tests and 25 Java SDK tests; zero failures/errors.
+- JDK 21: 256 server tests and 25 Java SDK tests; zero failures/errors.
 - Rust 1.97.1: formatting/Clippy with warnings denied and 66 unit tests.
 - Rust 1.97.1 MSVC: Strict TLS system test, PE CFG/ASLR/DEP, signed manifest verification and normal Java native loading.
 - Protected Java fixture: inheritance, interface default method, covariant return, integer result and dispatch after key rotation.

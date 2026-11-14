@@ -19,7 +19,8 @@ class DeploymentLockTest {
     @Test
     void excludesConcurrentOwnersAndCanBeReacquiredAfterClose() throws Exception {
         SecureFiles.preparePrivateDirectory(temporaryDirectory);
-        Path lockPath = temporaryDirectory.resolve(DeploymentLock.FILE_NAME);
+        Path lockPath = temporaryDirectory.toRealPath(java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                .resolve(DeploymentLock.FILE_NAME);
 
         try (DeploymentLock first = DeploymentLock.acquire(temporaryDirectory)) {
             assertEquals(lockPath, first.path());

@@ -16,6 +16,7 @@ import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.util.Collections;
+import java.util.ArrayDeque;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
@@ -23,6 +24,26 @@ import java.util.Set;
 /** Owner-only file operations used for uploaded protected resources. */
 public final class SecureFiles {
     private SecureFiles() {
+    }
+
+    /** Resolves existing Windows 8.3 aliases without accepting links or reparse points. */
+    public static Path canonicalPath(Path path) throws IOException {
+        Path normalized = path.toAbsolutePath().normalize();
+        rejectLinkComponents(normalized);
+        ArrayDeque<Path> missing = new ArrayDeque<>();
+        Path existing = normalized;
+        while (!Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+            missing.push(existing.getFileName());
+            existing = existing.getParent();
+            if (existing == null) {
+                throw new IOException("path has no existing ancestor: " + normalized);
+            }
+        }
+        Path canonical = existing.toRealPath(LinkOption.NOFOLLOW_LINKS);
+        while (!missing.isEmpty()) {
+            canonical = canonical.resolve(missing.pop());
+        }
+        return canonical;
     }
 
     public static Path preparePrivateDirectory(Path directory) throws IOException {

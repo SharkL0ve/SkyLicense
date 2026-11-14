@@ -46,7 +46,12 @@ public final class ResourceCatalog {
         if (connection == null || resourceRoot == null) {
             throw new SQLException("database connection and resource root are required");
         }
-        Path root = resourceRoot.toAbsolutePath().normalize();
+        final Path root;
+        try {
+            root = SecureFiles.canonicalPath(resourceRoot);
+        } catch (IOException error) {
+            throw new SQLException("resource root cannot be canonicalized safely", error);
+        }
         Path deploymentRoot = root.getParent();
         if (deploymentRoot == null) {
             throw new SQLException("resource root has no deployment parent");
@@ -76,9 +81,13 @@ public final class ResourceCatalog {
                 } catch (RuntimeException error) {
                     throw new SQLException("resource catalog contains an invalid path", error);
                 }
-                Path path = (parsed.isAbsolute() ? parsed : deploymentRoot.resolve(parsed))
-                        .toAbsolutePath()
-                        .normalize();
+                final Path path;
+                try {
+                    path = SecureFiles.canonicalPath(
+                            parsed.isAbsolute() ? parsed : deploymentRoot.resolve(parsed));
+                } catch (IOException error) {
+                    throw new SQLException("resource path cannot be canonicalized safely", error);
+                }
                 if (path.equals(root) || !path.startsWith(root)) {
                     throw new SQLException(
                             "resource catalog path is outside the resource directory: " + path);
@@ -125,7 +134,7 @@ public final class ResourceCatalog {
             Path resourceRoot
     ) throws SQLException, IOException {
         synchronized (ResourceManager.class) {
-            Path root = resourceRoot.toAbsolutePath().normalize();
+            Path root = SecureFiles.canonicalPath(resourceRoot);
             Set<Path> expected = new HashSet<>();
             for (ResourceManager.CatalogEntry entry : snapshot(accessor, root)) {
                 expected.add(entry.path().toAbsolutePath().normalize());
