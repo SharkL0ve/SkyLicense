@@ -16,6 +16,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -245,6 +246,18 @@ def main():
         if result.returncode or marker.encode() not in result.stdout:
             write(root / "maintenance-failure.log", result.stdout + result.stderr)
             print("artifacts=" + str(root), flush=True)
+            # Fresh preflight has no licenses, sessions or MFA material. Report
+            # only exception messages, with every generated credential removed.
+            if not (deploy / "web_magiclicense.db").exists():
+                diagnostic = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+                for secret_file in (root / "secrets").iterdir():
+                    value = secret_file.read_text(encoding="utf-8").strip()
+                    if value:
+                        diagnostic = diagnostic.replace(value, "[redacted]")
+                errors = [line.strip() for line in diagnostic.splitlines()
+                          if re.search(r"Exception(?: in thread|:)|Error:|Caused by:", line)]
+                for error in errors[:6]:
+                    print("maintenance_error=" + error[:1_000], flush=True)
             raise RuntimeError("maintenance failed; inspect private maintenance-failure.log")
     maintenance("--validate-config", marker="deployment_validation=ok")
     passed("fresh deployment preflight")
