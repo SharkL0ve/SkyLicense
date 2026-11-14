@@ -159,7 +159,7 @@ def main():
     for name in ("certs", "resources", "secrets", "fixture", "client", "backups"):
         private_directory(root / name)
     shutil.copy2(REPO / "build/libs/SkyLicense-Server.jar", deploy / "SkyLicense-Server.jar")
-    (deploy / "resources").mkdir()
+    private_directory(deploy / "resources")
     tls_material(root / "certs")
     native_name = "SkyLicense_64.dll" if os.name == "nt" else "libSkyLicense_64.so"
     native_resources = REPO / "Client-Side/src/main/resources"
@@ -244,6 +244,7 @@ def main():
                                 capture_output=True, timeout=90)
         if result.returncode or marker.encode() not in result.stdout:
             write(root / "maintenance-failure.log", result.stdout + result.stderr)
+            print("artifacts=" + str(root), flush=True)
             raise RuntimeError("maintenance failed; inspect private maintenance-failure.log")
     maintenance("--validate-config", marker="deployment_validation=ok")
     passed("fresh deployment preflight")
