@@ -29,7 +29,7 @@ bytes = "1.11.1"
 byteorder = "1.4"
 #encrypt
 rand = "0.8.6"
-aes-gcm = "0.10.3"
+aes-gcm = "0.11.1"
 base64 = "0.22.1"
 flate2 = "1.0"
 sha2 = "0.10"
