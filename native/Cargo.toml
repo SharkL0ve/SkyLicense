@@ -47,7 +47,7 @@ winapi = { version = "0.3.0", features = ["processthreadsapi", "memoryapi", "deb
 nix = { version = "0.26", features = ["ptrace", "process", "mman"] }
 ctor = "0.2"
 chrono = "0.4"
-thiserror = "1.0"
+thiserror = "2.0"
 ntapi = "0.4"
 #obfuscation
 obfuse = "1.0.1"
