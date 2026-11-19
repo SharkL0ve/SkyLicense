@@ -28,7 +28,7 @@ webpki-roots = "1.0.12"
 bytes = "1.11.1"
 byteorder = "1.4"
 #encrypt
-rand = "0.8.6"
+rand = "0.9.5"
 aes-gcm = "0.10.3"
 base64 = "0.22.1"
 flate2 = "1.0"
