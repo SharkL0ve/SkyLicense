@@ -44,7 +44,7 @@ libc = "0.2"
 sysinfo = "0.28"
 lazy_static = "1.4"
 winapi = { version = "0.3.0", features = ["processthreadsapi", "memoryapi", "debugapi", "libloaderapi", "psapi", "winnt", "winbase", "handleapi", "wow64apiset", "tlhelp32", "ntdef", "errhandlingapi", "minwindef", "processenv", "fileapi", "namedpipeapi"] }
-nix = { version = "0.26", features = ["ptrace", "process", "mman"] }
+nix = { version = "0.32", features = ["ptrace", "process", "mman"] }
 ctor = "0.2"
 chrono = "0.4"
 thiserror = "1.0"
