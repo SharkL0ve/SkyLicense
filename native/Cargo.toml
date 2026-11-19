@@ -34,7 +34,7 @@ base64 = "0.22.1"
 flate2 = "1.0"
 sha2 = "0.10"
 hmac = "0.12"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = { version = "1", features = ["derive"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 #hashmap
